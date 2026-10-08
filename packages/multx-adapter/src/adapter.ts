@@ -35,6 +35,8 @@ export interface MultXAdapterConfig {
   fetchImpl?: typeof fetch;
   /** SHA-256 for the manifest check, for runtimes without WebCrypto. */
   sha256Hex?: (text: string) => Promise<string>;
+  /** Waits between status polls; injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface TransferParams {
@@ -188,10 +190,11 @@ export class MultXAdapter {
         expectedAmountBaseUnits: amount,
         verifyDestinationReceipt: params.verifyDestinationReceipt,
         fetchImpl: this.config.fetchImpl,
+        sleep: this.config.sleep,
         onStep: (status) => {
           if (status === 'signing' || status === 'signed' || status === 'locked') {
             record = { ...record, status: 'SIGNING', updatedAt: new Date().toISOString() };
-            void this.config.persist(record);
+            this.config.persist(record).catch(() => { /* re-persisted at the end */ });
           }
         },
       });
@@ -246,6 +249,7 @@ export class MultXAdapter {
       expectedAmountBaseUnits: BigInt(record.amountBaseUnits),
       verifyDestinationReceipt,
       fetchImpl: this.config.fetchImpl,
+      sleep: this.config.sleep,
     });
     const next: InternalMultXTransfer = {
       ...record,
