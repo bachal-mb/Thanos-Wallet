@@ -22,7 +22,11 @@ exports.default = async function afterPack(context) {
   const archive = path.join(resources, 'app.asar');
   let version;
   try {
-    version = JSON.parse(loadAsar().extractFile(archive, 'node_modules/ethers/package.json').toString()).version;
+    // path.join, not a '/' literal: @electron/asar splits the in-archive path
+    // on path.sep, so on Windows 'node_modules/ethers/package.json' is never
+    // found and every Windows build failed here.
+    const entry = path.join('node_modules', 'ethers', 'package.json');
+    version = JSON.parse(loadAsar().extractFile(archive, entry).toString()).version;
   } catch (e) {
     throw new Error(`afterPack: could not read node_modules/ethers from ${archive}: ${e.message}`);
   }
