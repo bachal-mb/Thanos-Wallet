@@ -35,6 +35,10 @@
      apps/extension/src/entrypoints/popup/popup.css, apps/mobile/App.tsx
      ═══════════════════════════════════════════════════════════════ */
 
+  /* Native controls (scrollbars, select arrows + option lists, autofill)
+     follow the theme; without it they're drawn light on the dark theme. */
+  color-scheme: dark;
+
   /* Brand aura — same geometry/strengths as desktop glass + mobile
      GlassAura. Theme-agnostic: layers over --bg-base, which flips with
      [data-theme]. */
@@ -157,6 +161,7 @@
 
 /* ─── Light mode (canonical, matches desktop) ──────────────────── */
 :root[data-theme="light"] {
+  color-scheme: light;
   /* Softer aura on light so it stays a pastel wash. */
   --bg-aura:
     radial-gradient(60% 50% at 12% 0%,   rgba(59, 122, 247, 0.22), transparent 70%),
@@ -1985,8 +1990,16 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
      banner (see the .lp-ext-prompt fix note above). */
   .modal-box { width: calc(100% - 24px) !important; max-width: 100% !important; }
   /* 16px is mandatory on mobile to suppress iOS Safari's focus
-     auto-zoom; do NOT drop below this. Padding stays tight. */
-  .field-input, .field-select { font-size: 16px !important; padding: 10px 11px !important; }
+     auto-zoom; do NOT drop below this. Padding stays tight. The sides are
+     not !important: a field with a leading icon or trailing button (inline
+     paddingLeft/Right, .field-input-with-icon/-trail) keeps the room it
+     reserves — forcing 11px put the Discover search icon over its
+     placeholder and long addresses under the QR / show-password buttons. */
+  .field-input, .field-select {
+    font-size: 16px !important;
+    padding-top: 10px !important; padding-bottom: 10px !important;
+    padding-left: 11px; padding-right: 11px;
+  }
 }
 
 /* ─── Very small phones (≤360) — extra-tight ─────────────────────── */
@@ -2447,6 +2460,10 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 }
 .settings-select:hover  { border-color: var(--border-strong); }
 .settings-select:focus  { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,122,247,0.10); }
+/* Text fields styled like the selects (account sign-in, custom network…)
+   — same box, no dropdown arrow. */
+input.settings-select,
+textarea.settings-select { background-image: none; padding-right: 12px; cursor: text; }
 
 .settings-btn {
   display: inline-flex; align-items: center; gap: 6px;

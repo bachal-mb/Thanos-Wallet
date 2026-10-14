@@ -11,6 +11,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  /* Native controls (scrollbars, select arrows + option lists, autofill)
+     follow the theme; without it they're drawn light on the dark theme. */
+  color-scheme: dark;
+
   /* Brand aura — same geometry/strengths as web + mobile GlassAura.
      Theme-agnostic: layers over --bg-base, which flips with [data-theme]. */
   --bg-aura:
@@ -61,6 +65,7 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
   /* Softer aura on light so it stays a pastel wash. */
   --bg-aura:
     radial-gradient(60% 50% at 12% 0%,   rgba(59, 122, 247, 0.22), transparent 70%),
@@ -1374,6 +1379,10 @@ button { font-family: inherit; cursor: pointer; color: inherit; }
 }
 .settings-select:hover  { border-color: var(--border-strong); }
 .settings-select:focus  { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,122,247,0.10); }
+/* Text fields styled like the selects (address book, custom network…)
+   — same box, no dropdown arrow. */
+input.settings-select,
+textarea.settings-select { background-image: none; padding-right: 12px; cursor: text; }
 
 .settings-input {
   background: var(--bg-elevated);
