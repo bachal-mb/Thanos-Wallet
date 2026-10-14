@@ -4,7 +4,7 @@
  * Native LITHO value transfers emit no logs, so nothing log-based ever
  * reports them — without this feed a Mainnet send or receive only ever
  * showed as the optimistic local "Pending" row. The explorer indexes full
- * transactions and exposes GET /api/txs?address=<0x|litho1> (verified live
+ * transactions and exposes GET /api/address/<0x|litho1>/txs (verified live
  * 2026-09-15: {txs:[...],total,limit,offset}).
  *
  * (This was makalu-explorer.ts; its Makalu and Kamet testnet feeds are gone —
@@ -34,7 +34,7 @@ interface ExplorerTx {
 /** Recent native-LITHO transfers involving `address` on Lithosphere
  *  Mainnet, newest first — or null when the explorer couldn't be reached
  *  (so the caller can say it's offline instead of showing an empty list). */
-export function fetchMainnetNativeActivity(address: string, timeoutMs = 8_000): Promise<IndexerActivityItem[] | null> {
+export function fetchMainnetNativeActivity(address: string, timeoutMs = 15_000): Promise<IndexerActivityItem[] | null> {
   return fetchExplorerNativeActivity(MAINNET_API, '', 'mainnet', address, timeoutMs);
 }
 
@@ -50,11 +50,13 @@ async function fetchExplorerNativeActivity(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${api}/txs?address=${encodeURIComponent(address)}`, { signal: ctrl.signal });
+    const res = await fetch(`${api}/address/${encodeURIComponent(address)}/txs?limit=50`, { signal: ctrl.signal });
     if (!res.ok) return null;
-    const json = (await res.json()) as { txs?: ExplorerTx[] } | null;
+    const json = (await res.json()) as { items?: ExplorerTx[]; txs?: ExplorerTx[] } | null;
     const out: IndexerActivityItem[] = [];
-    for (const t of json?.txs ?? []) {
+    // Per-address list since the Mainnet launch (2026-10-14): /api/txs
+    // now ignores ?address= and returns everyone's latest transactions.
+    for (const t of json?.items ?? json?.txs ?? []) {
       const from = (t.evmFromAddr ?? '').toLowerCase();
       const to   = (t.evmToAddr ?? '').toLowerCase();
       // The endpoint returns recent GLOBAL txs when the address is unknown —

@@ -12,7 +12,7 @@
  * as the optimistic local "Pending" row (local-activity.ts), which then
  * never resolved to a confirmed row since nothing ever reported it.
  *
- * Each explorer exposes GET /api/txs?address=<0x|litho1> — full
+ * Each explorer exposes GET /api/address/<0x|litho1>/txs — full
  * transactions, not just logged events.
  */
 import { formatUnits } from 'ethers';
@@ -58,11 +58,13 @@ async function fetchExplorerNativeActivity(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${api}/txs?address=${encodeURIComponent(address)}`, { signal: ctrl.signal });
+    const res = await fetch(`${api}/address/${encodeURIComponent(address)}/txs?limit=50`, { signal: ctrl.signal });
     if (!res.ok) return [];
-    const json = (await res.json()) as { txs?: ExplorerTx[] } | null;
+    const json = (await res.json()) as { items?: ExplorerTx[]; txs?: ExplorerTx[] } | null;
     const out: ExplorerActivityItem[] = [];
-    for (const t of json?.txs ?? []) {
+    // Per-address list since the Mainnet launch (2026-10-14): /api/txs
+    // now ignores ?address= and returns everyone's latest transactions.
+    for (const t of json?.items ?? json?.txs ?? []) {
       const from = (t.evmFromAddr ?? '').toLowerCase();
       const to   = (t.evmToAddr ?? '').toLowerCase();
       if (from !== me && to !== me) continue;
@@ -93,13 +95,13 @@ async function fetchExplorerNativeActivity(
   }
 }
 
-export function fetchMakaluNativeActivity(address: string, timeoutMs = 8_000): Promise<ExplorerActivityItem[]> {
+export function fetchMakaluNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
   return fetchExplorerNativeActivity(MAKALU_API, 'makalu', address, timeoutMs);
 }
-export function fetchKametNativeActivity(address: string, timeoutMs = 8_000): Promise<ExplorerActivityItem[]> {
+export function fetchKametNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
   return fetchExplorerNativeActivity(KAMET_API, 'kamet', address, timeoutMs);
 }
-export function fetchMainnetNativeActivity(address: string, timeoutMs = 8_000): Promise<ExplorerActivityItem[]> {
+export function fetchMainnetNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
   return fetchExplorerNativeActivity(MAINNET_API, 'mainnet', address, timeoutMs);
 }
 

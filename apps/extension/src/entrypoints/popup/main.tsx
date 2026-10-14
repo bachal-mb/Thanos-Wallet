@@ -1669,7 +1669,7 @@ function QuanttPanel({ overview, onSelectAgent, onCreateAgent, onViewAll }: {
   const pct = (n: number) => (n >= 0 ? '+' : '') + (n ?? 0).toFixed(1) + '%';
   const posColor = (n: number) => (n >= 0 ? '#22c55e' : '#ef4444');
   return (
-    <div style={{ marginTop: 10, borderTop: '1px solid var(--border, rgba(148,163,184,0.16))', paddingTop: 10 }}>
+    <div style={{ marginTop: 10, borderTop: '1px solid var(--border-default))', paddingTop: 10 }}>
       {p && (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -1702,7 +1702,7 @@ function QuanttPanel({ overview, onSelectAgent, onCreateAgent, onViewAll }: {
         {agents.length > 0 && (
           <button
             onClick={onViewAll}
-            style={{ flex: 1, fontSize: 10.5, fontWeight: 700, padding: '6px 8px', borderRadius: 7, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border, rgba(148,163,184,0.28))' }}
+            style={{ flex: 1, fontSize: 10.5, fontWeight: 700, padding: '6px 8px', borderRadius: 7, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-default))' }}
           >All agents</button>
         )}
       </div>
@@ -2727,7 +2727,7 @@ function AIAssistant() {
                 >Open Quantts ↗</button>
                 <button
                   onClick={disconnect}
-                  style={{ fontSize: 12, fontWeight: 700, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border, rgba(148,163,184,0.28))' }}
+                  style={{ fontSize: 12, fontWeight: 700, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-default))' }}
                 >Disconnect</button>
               </>
             ) : (
@@ -2739,7 +2739,7 @@ function AIAssistant() {
                 >{busy ? 'Connecting…' : 'Connect with Thanos'}</button>
                 <button
                   onClick={() => browser.tabs.create({ url: QUANTT_AGENTS_URL })}
-                  style={{ fontSize: 12, fontWeight: 700, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border, rgba(148,163,184,0.28))' }}
+                  style={{ fontSize: 12, fontWeight: 700, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-default))' }}
                 >Open ↗</button>
               </>
             )}
@@ -3051,7 +3051,7 @@ function ActivityScreen() {
                 <Ic size={14} strokeWidth={2.4}/>
               </div>
               <div className="row-mid">
-                <div className="row-name">{t.label} {t.sym}{t.pending && <span className="pending-pill">Pending</span>}</div>
+                <div className="row-name">{t.label} {t.sym}{t.pending && <span className="pending-pill">Pending</span>}{t.status === 'failed' && <span className="failed-pill">Failed</span>}</div>
                 <div className="row-sub">{t.time}</div>
               </div>
               <div className="row-right">
@@ -3221,7 +3221,7 @@ function CustomAssetsSection() {
     finally { setTBusy(false); }
   };
 
-  const inp: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: 'var(--bg-elev, #1a1a1f)', color: 'var(--text-primary)', border: '1px solid var(--border, #2a2a30)', borderRadius: 8, padding: '7px 9px', fontSize: 12, marginTop: 6 };
+  const inp: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-default)', borderRadius: 8, padding: '7px 9px', fontSize: 12, marginTop: 6 };
   const btn: React.CSSProperties = { fontSize: 12, fontWeight: 700, padding: '7px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', background: 'var(--blue)', color: '#fff' };
   const link: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 };
 
@@ -3379,7 +3379,7 @@ function SettingsScreen({
               // rate is unavailable) — reflect that in the control.
               void applyDisplayCurrency(pick).then(setFiat);
             }}
-            style={{ background: 'var(--bg-elev, #1a1a1f)', color: 'var(--text-primary)', border: '1px solid var(--border, #2a2a30)', borderRadius: 8, padding: '5px 8px', fontSize: 12 }}
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-default)', borderRadius: 8, padding: '5px 8px', fontSize: 12 }}
           >
             {FX_CURRENCIES.map(c => <option key={c}>{c}</option>)}
           </select>
@@ -3433,7 +3433,7 @@ function SettingsScreen({
             className="set-select"
             value={sessionDur}
             onChange={(e) => { void onChangeDuration(e.target.value as SessionDuration); }}
-            style={{ background: 'var(--bg-elev, #1a1a1f)', color: 'var(--text-primary)', border: '1px solid var(--border, #2a2a30)', borderRadius: 8, padding: '5px 8px', fontSize: 12 }}
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-default)', borderRadius: 8, padding: '5px 8px', fontSize: 12 }}
           >
             {SESSION_DURATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -3892,7 +3892,7 @@ function TokenDetailModal({ sym, chainId, onClose, onSend, onReceive }: {
         {rows.length === 0 && <div style={{ padding: '10px 0', textAlign: 'center', fontSize: 11, color: 'var(--text-muted)' }}>No {sym} activity yet.</div>}
         {rows.map(t => (
           <div key={t.id} onClick={() => setTxDetail(t)} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, cursor: 'pointer' }}>
-            <div><div style={{ fontWeight: 600 }}>{t.label}{t.pending && <span className="pending-pill">Pending</span>}</div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{t.time}</div></div>
+            <div><div style={{ fontWeight: 600 }}>{t.label}{t.pending && <span className="pending-pill">Pending</span>}{t.status === 'failed' && <span className="failed-pill">Failed</span>}</div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{t.time}</div></div>
             <span style={{ fontFamily: 'Geist Mono, monospace', color: t.pos ? '#10b981' : 'var(--text-secondary)' }}>{t.amount}</span>
           </div>
         ))}
@@ -3979,7 +3979,11 @@ function SendModal({ onClose, initialChain, initialCoin, initialChainId, initial
   initialTo?: string;
   address?: string;
 }) {
-  const { coins, reload } = usePortfolioCtx();
+  const { coins: allCoins, reload } = usePortfolioCtx();
+  // The EVM pill's asset list: EVM balances only. The portfolio also carries
+  // BTC/SOL/ATOM rows (no chainId) — those have their own pills, and picking
+  // one here would route a send through the EVM path.
+  const coins = useMemo(() => allCoins.filter(c => c.chainId != null), [allCoins]);
   const seed = useWalletSeed();
   const [chain, setChain] = useState<ExtSendChain>(initialChain ?? 'evm');
   const [selectedKey, setSelectedKey] = useState('');
@@ -4048,7 +4052,12 @@ function SendModal({ onClose, initialChain, initialCoin, initialChainId, initial
         evmChain:     evmNet ? { chainId: evmNet.chainId, rpcUrl: evmNet.rpcUrl } : undefined,
       });
       setTxHash(hash);
-      if (address) addLocalActivity(address, { hash, chain, sym: chain === 'evm' ? (coin?.sym ?? 'LITHO') : meta.sym, amount: amt, label: 'Sent', ts: Date.now() });
+      // Recorded with the chain it went out on, so Activity can settle it there.
+      if (address) addLocalActivity(address, {
+        hash, chain, sym: chain === 'evm' ? (coin?.sym ?? 'LITHO') : meta.sym, amount: amt, ts: Date.now(),
+        ...(chain === 'evm' && evmNet ? { chainId: evmNet.chainId, networkName: evmNet.name } : {}),
+        ...(chain === 'evm' && coin && !coin.native && coin.tokenAddress ? { tokenAddress: coin.tokenAddress } : {}),
+      });
       reload();
       setSending(false);
     } catch (e) {

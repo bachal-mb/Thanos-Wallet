@@ -13,6 +13,13 @@
  * resolvePendingActivity() polls the tx's OWN chain RPC directly for a
  * receipt and flips the stored status in place, so the row stays (doesn't
  * vanish) but shows as sent/failed correctly.
+ *
+ * HISTORY (2026-10-15, client: sends "still pending" a day later): rows are
+ * no longer dropped after 24h — only past the newest MAX — and Bitcoin,
+ * Solana and Cosmos sends are settled too (mempool.space,
+ * getSignatureStatuses, the Cosmos REST tx query). A send its chain has no
+ * record of a day on is marked failed instead of pending for ever. Same
+ * rules as the mobile app and the extension.
  */
 export interface LocalTx {
   hash:     string;
@@ -29,8 +36,9 @@ export interface LocalTx {
 }
 
 const keyFor = (addr: string) => `thanos-local-activity:${(addr || '').toLowerCase()}`;
-const MAX = 50;
-const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h — a dropped/failed tx never lingers past this
+const MAX = 500;
+/** After this long, a send its chain has never heard of counts as dropped. */
+const DROPPED_AFTER_MS = 24 * 60 * 60 * 1000;
 const MAX_RESOLVE_PER_PASS = 12;
 const RECEIPT_TIMEOUT_MS = 6_000;
 
@@ -39,14 +47,9 @@ export function getLocalActivity(addr: string): LocalTx[] {
   try {
     const arr = JSON.parse(localStorage.getItem(keyFor(addr)) || '[]');
     if (!Array.isArray(arr)) return [];
-    // Expire-on-read: drop entries older than 24h so a tx the indexer never
-    // reports (dropped/failed) can't sit as a permanent "Pending" row.
-    const cutoff = Date.now() - MAX_AGE_MS;
-    const live = (arr as LocalTx[]).filter((t) => typeof t?.ts === 'number' && t.ts >= cutoff);
-    if (live.length !== arr.length) {
-      try { localStorage.setItem(keyFor(addr), JSON.stringify(live)); } catch { /* non-fatal */ }
-    }
-    return live;
+    // History is kept; a send that never settles is marked failed by
+    // resolvePendingActivity instead of being deleted.
+    return (arr as LocalTx[]).filter((t) => typeof t?.ts === 'number' && !!t.hash);
   } catch {
     return [];
   }
@@ -63,40 +66,104 @@ export function addLocalActivity(addr: string, tx: LocalTx): void {
   }
 }
 
-/** Poll each still-pending row's OWN chain for a receipt and flip its status
- *  in place — see the module doc for why this exists. Rows with no chainId
- *  (BTC/SOL/ATOM, or rows recorded before chainId existed) are left
- *  untouched. Best-effort —
- *  an unreachable chain just stays pending and gets retried on the next call
- *  (portfolio load / reload). Returns the up-to-date list. */
+type Lookup = 'confirmed' | 'failed' | 'unknown' | null;
+
+async function fetchJson(url: string, init?: RequestInit): Promise<{ status: number; body: unknown } | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), RECEIPT_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const timed = <T,>(p: Promise<T>) =>
+  Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), RECEIPT_TIMEOUT_MS))]);
+
+async function lookupEvm(chainId: number, hash: string): Promise<Lookup> {
+  let evm: typeof import('./evm-external');
+  try { evm = await import('./evm-external'); } catch { return null; }
+  if (!evm.getExtEvmChain(chainId)) return null; // not a chain this module knows an RPC for
+  const provider = evm.getExtEvmProvider(chainId);
+  try {
+    const receipt = await timed(provider.getTransactionReceipt(hash));
+    if (receipt === 'timeout') return null;
+    if (receipt) return receipt.status === 1 ? 'confirmed' : 'failed';
+    const tx = await timed(provider.getTransaction(hash));
+    if (tx === 'timeout') return null;
+    return tx ? null : 'unknown';
+  } catch {
+    return null;
+  }
+}
+
+async function lookupBitcoin(hash: string): Promise<Lookup> {
+  const r = await fetchJson(`https://mempool.space/api/tx/${encodeURIComponent(hash)}/status`);
+  if (!r) return null;
+  if (r.status === 404) return 'unknown';
+  return (r.body as { confirmed?: boolean } | null)?.confirmed ? 'confirmed' : null;
+}
+
+async function lookupSolana(sig: string): Promise<Lookup> {
+  for (const url of ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com']) {
+    const r = await fetchJson(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[sig], { searchTransactionHistory: true }] }),
+    });
+    const value = (r?.body as { result?: { value?: Array<{ err: unknown; confirmationStatus?: string } | null> } } | null)?.result?.value;
+    if (!Array.isArray(value)) continue;
+    const st = value[0];
+    if (!st) return 'unknown';
+    if (st.err) return 'failed';
+    return st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized' ? 'confirmed' : null;
+  }
+  return null;
+}
+
+async function lookupCosmos(hash: string): Promise<Lookup> {
+  const r = await fetchJson(`https://cosmos-rest.publicnode.com/cosmos/tx/v1beta1/txs/${encodeURIComponent(hash)}`);
+  if (!r) return null;
+  const code = (r.body as { tx_response?: { code?: number } } | null)?.tx_response?.code;
+  if (r.status === 200 && typeof code === 'number') return code === 0 ? 'confirmed' : 'failed';
+  return r.status === 404 || r.status === 400 ? 'unknown' : null;
+}
+
+function lookup(t: LocalTx): Promise<Lookup> {
+  if (t.chainId != null) return lookupEvm(t.chainId, t.hash);
+  if (t.chain === 'bitcoin') return lookupBitcoin(t.hash);
+  if (t.chain === 'solana') return lookupSolana(t.hash);
+  if (t.chain === 'cosmos') return lookupCosmos(t.hash);
+  return Promise.resolve(null);
+}
+
+/** Check each still-pending send on its OWN chain and settle it in place:
+ *  confirmed, failed (reverted), or failed because a day on the chain has no
+ *  record of it. An unreachable chain leaves the row pending for the next
+ *  call (portfolio load / reload). Returns the up-to-date list. */
 export async function resolvePendingActivity(addr: string): Promise<LocalTx[]> {
   const arr = getLocalActivity(addr);
   if (!addr) return arr;
-  const pending = arr.filter((t) => (t.status ?? 'pending') === 'pending' && t.chainId != null).slice(0, MAX_RESOLVE_PER_PASS);
+  const pending = arr.filter((t) => (t.status ?? 'pending') === 'pending').slice(0, MAX_RESOLVE_PER_PASS);
   if (pending.length === 0) return arr;
 
-  let evm: typeof import('./evm-external') | null = null;
-  try { evm = await import('./evm-external'); } catch { return arr; }
-
-  const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | null> =>
-    Promise.race([p, new Promise<null>((res) => setTimeout(() => res(null), ms))]);
-
-  const resolutions = await Promise.allSettled(pending.map(async (t) => {
-    const chain = evm!.getExtEvmChain(t.chainId!);
-    if (!chain) return null; // not a chain this module knows an RPC for
-    const receipt = await withTimeout(evm!.getExtEvmProvider(t.chainId!).getTransactionReceipt(t.hash), RECEIPT_TIMEOUT_MS);
-    if (!receipt) return null; // still pending, or unreachable — leave as-is
-    const status: 'confirmed' | 'failed' = receipt.status === 1 ? 'confirmed' : 'failed';
-    return { hash: t.hash, status };
+  const now = Date.now();
+  const results = await Promise.allSettled(pending.map(async (t) => {
+    const r = await lookup(t);
+    if (r === 'confirmed' || r === 'failed') return { hash: t.hash, status: r };
+    if (r === 'unknown' && now - t.ts > DROPPED_AFTER_MS) return { hash: t.hash, status: 'failed' as const };
+    return null;
   }));
-
   const updates = new Map<string, 'confirmed' | 'failed'>();
-  for (const r of resolutions) {
-    if (r.status === 'fulfilled' && r.value) updates.set(r.value.hash, r.value.status);
-  }
+  for (const r of results) if (r.status === 'fulfilled' && r.value) updates.set(r.value.hash, r.value.status);
   if (updates.size === 0) return arr;
 
-  const next = arr.map((t) => (updates.has(t.hash) ? { ...t, status: updates.get(t.hash)! } : t));
+  const next = getLocalActivity(addr).map((t) => (updates.has(t.hash) ? { ...t, status: updates.get(t.hash)! } : t));
   try { localStorage.setItem(keyFor(addr), JSON.stringify(next)); } catch { /* best-effort */ }
   return next;
 }

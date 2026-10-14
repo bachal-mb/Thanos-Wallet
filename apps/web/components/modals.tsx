@@ -554,12 +554,15 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
      entry (with an RBF snapshot) inline, so it's excluded here. */
   const recordPendingSend = (hash: string) => {
     if (!hash) return;
-    const chain: 'evm' | 'solana' = isSolanaSend ? 'solana' : 'evm';
+    // Cosmos used to be filed under 'evm', so it could never be settled.
+    const chain: 'evm' | 'solana' | 'cosmos' = isSolanaSend ? 'solana' : isCosmosSend ? 'cosmos' : 'evm';
     const tok = evmChainId ? allEvmTokens().find(t => t.chainId === evmChainId && t.symbol === coin) : null;
     try {
       recordPendingTx({
         id:           hash,
         chain,
+        // The chain it went out on, so Activity can settle it there.
+        ...(chain === 'evm' && evmChainId ? { chainId: evmChainId } : {}),
         symbol:       coin,
         recipient:    to.trim(),
         amount,

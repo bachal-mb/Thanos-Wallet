@@ -72,6 +72,9 @@ function buildCsp(nonce) {
       // Mainnet (9005): rpc-mainnet, its only RPC.
       + " https://rpc.litho.ai https://rpc-2.litho.ai https://rpc-3.litho.ai https://api-3.litho.ai"
       + " https://rpc-mainnet.litho.ai"
+      // Lithosphere Mainnet explorer — LITHO in/out for Activity
+      // (lib/tx-store.ts syncExplorerHistory).
+      + " https://lithoscan.ai"
       + " https://bridge.litho.ai" + multxOrigin()
       + " https://ignite.trade"
       // Quantt AI agents — native wallet sign-in + /v1/mobile BFF. api.quantts.ai

@@ -28,7 +28,7 @@ import {
   syncContactsFromServer, onContactsChanged,
   type Contact,
 } from '../lib/address-book';
-import { loadPendingTxs, type PendingTx } from '../lib/tx-store';
+import { loadPendingTxs, pendingActivityRows, resolvePendingTxs, syncExplorerHistory, type PendingTx } from '../lib/tx-store';
 import { BumpFeeModal } from './BumpFeeModal';
 import { bitcoinExplorerUrl } from '../lib/bitcoin';
 import { BookUser, Plus, Trash2, ArrowUpRight, Zap } from 'lucide-react';
@@ -464,11 +464,17 @@ export function TransactionsView() {
   const wallet = useWallet();
   const evmAddress = wallet?.evmAddress;
   const [filter, setFilter] = useState<'All'|'Send'|'Receive'|'Swap'>('All');
-  // Settled history came from the Thanos indexer, which covers the Makalu
-  // testnet only — no longer part of the wallet (2026-09-29). The wallet's
-  // own sends show in the Pending section below until they settle.
-  const live: IndexerActivityItem[] = [];
-  void evmAddress;
+  // Settled history: the wallet's own sends once their chain confirms (or
+  // fails) them, and LITHO in/out on Lithosphere Mainnet from its explorer —
+  // lib/tx-store.ts. (The Thanos indexer covers the Makalu testnet only, no
+  // longer part of the wallet.) Unsettled sends are in the Pending section.
+  const [histTick, setHistTick] = useState(0);
+  const live: IndexerActivityItem[] = useMemo(
+    () => pendingActivityRows([]).filter(r => r.status !== 'pending'),
+    // histTick re-reads the store after a sync / settle pass.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [histTick],
+  );
 
   /* Pending (broadcast-but-unconfirmed) txs from local store. Currently
      only BTC is persisted here — EVM / Solana pending state lands when
@@ -481,6 +487,23 @@ export function TransactionsView() {
     window.addEventListener('storage', refresh);
     return () => window.removeEventListener('storage', refresh);
   }, []);
+  // Settle pending sends on their own chain and pull Mainnet LITHO history —
+  // on open and every 30 s while the page is up.
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      await Promise.all([
+        evmAddress ? syncExplorerHistory(evmAddress).catch(() => false) : Promise.resolve(false),
+        resolvePendingTxs().catch(() => false),
+      ]);
+      if (!alive) return;
+      setHistTick(t => t + 1);
+      setPending(loadPendingTxs().filter(t => t.status === 'broadcast'));
+    };
+    void run();
+    const id = setInterval(() => { void run(); }, 30_000);
+    return () => { alive = false; clearInterval(id); };
+  }, [evmAddress]);
 
   // Keep the raw item beside its display row so a click can open the detail
   // modal (which needs hash/counterparty/ts, not the formatted row).

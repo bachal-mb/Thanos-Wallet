@@ -113,6 +113,8 @@ https://thanos.fi/privacy is the canonical document.
 ## What's New in this version (release notes, 4,000 chars max)
 
 ```
+• Lithosphere Mainnet history: LITHO you send and receive shows in
+  Activity again, now that Mainnet is live.
 • Received funds now show up: you get a notification ("You received
   2.5 USDT on BNB Chain") and the deposit stays in Activity, on every
   network — Lithosphere, Ethereum, BNB Chain, Base, Bitcoin, Solana and

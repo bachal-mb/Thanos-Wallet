@@ -3,13 +3,18 @@
  *
  * Reads balances straight from each chain's RPC (Lithosphere Mainnet, the
  * external EVM chains, custom networks, BTC/SOL/ATOM) and prices them via
- * @thanos/sdk-core's CoinGecko pricing. Activity is the user's own recorded
- * sends. (The Thanos indexer only covers the Makalu testnet, which the wallet
- * no longer includes — 2026-09-29.)
+ * @thanos/sdk-core's CoinGecko pricing. Activity is the wallet's own history
+ * (lib/local-activity.ts): sends, settled on their own chain; native LITHO in
+ * and out from the Lithosphere explorer; and funds received on every other
+ * network, noticed as balance increases (lib/incoming.ts). (The Thanos
+ * indexer only covers the Makalu testnet, which the wallet no longer
+ * includes — 2026-09-29.)
  */
 import { createContext, useContext, useEffect, useState } from 'react';
 import { fetchEcosystemPrices, formatFiat } from '@thanos/sdk-core';
-import { getLocalActivity } from '../../lib/local-activity';
+import { getLocalActivity, addLocalReceive, mergeExplorerRows, resolvePendingActivity, rowId } from '../../lib/local-activity';
+import { fetchMainnetNativeActivity } from '../../lib/explorer-activity';
+import { detectIncoming, watchKeyEvm, watchKeyNative, type WatchedBalance } from '../../lib/incoming';
 import { loadSnapshot, saveSnapshot } from './portfolio-cache';
 
 /* ─── Display helpers ────────────────────────────────────────────────── */
@@ -50,27 +55,41 @@ function relativeTime(iso?: string): string {
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 
-/** Merge optimistic local sends (recorded at broadcast time) into the indexer
- *  feed. Native LITHO / external-chain sends are never indexed, so without this
- *  a user's own transaction never appears. Deduped by tx hash — once the
- *  indexer reports the tx, the local copy drops out so there's no double row.
- *  Local entries (newest) sort above the indexed ones. */
-function mergeLocalActivity(address: string, indexed: DisplayTx[]): DisplayTx[] {
-  const local: DisplayTx[] = getLocalActivity(address).map((t) => ({
-    id: t.hash,
-    sym: t.sym,
-    label: t.label,
-    amount: `-${String(t.amount).replace(/^[+-]/, '')}`,
-    time: relativeTime(new Date(t.ts).toISOString()) || 'just now',
-    pos: false,
-    color: coinColor(t.sym),
-    txHash: t.hash,
-    ts: new Date(t.ts).toISOString(),
-    rawAmount: parseFloat(String(t.amount).replace(/^[+-]/, '')) || 0,
-    pending: true, // local-only until the indexer reports the hash (see filter below)
-  }));
-  const fresh = local.filter((l) => !indexed.some((x) => x.id === l.id || x.id.includes(l.id)));
-  return [...fresh, ...indexed];
+/** The wallet's history (lib/local-activity.ts) as display rows, newest
+ *  first. "Pending" only while a send hasn't been settled on its chain. */
+function activityFromStore(address: string): DisplayTx[] {
+  return getLocalActivity(address).map((t) => {
+    const received = t.label === 'Received';
+    const status = t.status ?? 'pending';
+    const amt = String(t.amount).replace(/^[+-]/, '');
+    return {
+      id: rowId(t),
+      sym: t.sym,
+      label: t.label,
+      amount: `${received ? '+' : '-'}${amt}`,
+      time: relativeTime(new Date(t.ts).toISOString()) || 'just now',
+      pos: received,
+      color: coinColor(t.sym),
+      ...(t.hash ? { txHash: t.hash } : {}),
+      ts: new Date(t.ts).toISOString(),
+      rawAmount: parseFloat(amt) || 0,
+      status,
+      pending: status === 'pending' ? true : undefined,
+    };
+  });
+}
+
+/** Funds received (lib/incoming.ts) go into the history. Native LITHO on
+ *  Lithosphere Mainnet is skipped here — the explorer lists it with its hash. */
+function recordIncoming(address: string, reads: WatchedBalance[]): void {
+  for (const rx of detectIncoming(address, reads)) {
+    if (rx.chainId === 9005 && !rx.tokenAddress) continue;
+    const now = Date.now();
+    addLocalReceive(address, {
+      id: `recv:${rx.key}:${now}`, chain: rx.chain, sym: rx.sym, amount: formatAmount(rx.amount), ts: now,
+      chainId: rx.chainId, networkName: rx.networkName, tokenAddress: rx.tokenAddress,
+    });
+  }
 }
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
@@ -173,6 +192,10 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
               return { sym: 'ATOM', name: 'Cosmos Hub', bal, decimals: 6 };
             })(),
           ]);
+          recordIncoming(address, tries.flatMap((r) => r.status !== 'fulfilled' ? [] : [{
+            key: watchKeyNative(r.value.sym), sym: r.value.sym, balance: r.value.bal, decimals: r.value.decimals,
+            networkName: r.value.name, chain: (r.value.sym === 'BTC' ? 'bitcoin' : r.value.sym === 'SOL' ? 'solana' : 'cosmos') as WatchedBalance['chain'],
+          }]));
           for (const r of tries) {
             if (r.status !== 'fulfilled' || r.value.bal <= 0) continue;
             const priceUsd = prices[r.value.sym] ?? 0;
@@ -192,11 +215,24 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
         const evmExt: DisplayCoin[] = [];
         try {
           const m = await import('../../lib/evm-external');
-          const [natives, tokens] = await Promise.all([
-            m.getAllExtEvmNativeBalances(address),
-            m.getAllExtEvmTokenBalances(address),
+          const [nativeReads, tokenReads] = await Promise.all([
+            m.readAllExtEvmNativeBalances(address),
+            m.readAllExtEvmTokenBalances(address),
           ]);
           if (cancelled) return;
+          recordIncoming(address, [
+            ...nativeReads.flatMap(({ chain, balance }) => balance == null ? [] : [{
+              key: watchKeyEvm(chain.chainId), sym: chain.nativeSymbol, balance, decimals: 18,
+              networkName: chain.name, chain: 'evm' as const, chainId: chain.chainId,
+            }]),
+            ...tokenReads.flatMap(({ token, balance }) => balance == null ? [] : [{
+              key: watchKeyEvm(token.chainId, token.address), sym: token.symbol, balance, decimals: token.decimals,
+              networkName: m.getExtEvmChain(token.chainId)?.name ?? '', chain: 'evm' as const,
+              chainId: token.chainId, tokenAddress: token.address,
+            }]),
+          ]);
+          const natives = nativeReads.filter((r): r is { chain: typeof r.chain; balance: number } => r.balance != null && r.balance > 0);
+          const tokens = tokenReads.filter((r): r is { token: typeof r.token; balance: number } => r.balance != null && r.balance > 0);
           for (const { chain, balance } of natives) {
             const priceUsd = prices[chain.nativeSymbol] ?? 0;
             evmExt.push({
@@ -230,8 +266,20 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
           return rank(a) - rank(b);
         });
 
-        const mergedActivity = mergeLocalActivity(address, []);
+        const mergedActivity = activityFromStore(address);
         setState({ coins, activity: mergedActivity, totalUsd, loading: false, offline: false });
+        // Then bring the history up to date without holding up the balances:
+        // Lithosphere explorer rows (receives, sends from other devices) and
+        // pending sends settled on their own chain.
+        void (async () => {
+          const explorer = await fetchMainnetNativeActivity(address).catch(() => null);
+          if (explorer) mergeExplorerRows(address, explorer);
+          await resolvePendingActivity(address).catch(() => null);
+          if (cancelled) return;
+          const activity = activityFromStore(address);
+          setState((st) => ({ ...st, activity }));
+          if (coins.length > 0) saveSnapshot(address, { coins, activity, totalUsd });
+        })();
         // Persist the fresh result so the next popup open paints instantly.
         // Guard on coins.length: the per-chain reads are best-effort, so an
         // RPC outage can reach here as an empty list with offline:false —
@@ -244,7 +292,7 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
       } catch {
         if (cancelled) return;
         // Pricing unreachable — still surface the user's own recorded sends.
-        setState({ coins: [], activity: mergeLocalActivity(address, []), totalUsd: 0, loading: false, offline: true });
+        setState({ coins: [], activity: activityFromStore(address), totalUsd: 0, loading: false, offline: true });
       }
     })();
     return () => { cancelled = true; };

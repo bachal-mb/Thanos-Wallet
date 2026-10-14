@@ -31,7 +31,7 @@ import {
   getAllEvmNativeBalancesMerged, getAllEvmTokenBalancesMerged, getEvmChainMerged,
   type EvmTokenLike,
 } from '../lib/custom-assets';
-import { pendingActivityRows } from '../lib/tx-store';
+import { pendingActivityRows, resolvePendingTxs, syncExplorerHistory } from '../lib/tx-store';
 import { TransactionDetailModal } from './TransactionDetailModal';
 
 import { TOKENS } from '../lib/tokens';
@@ -564,6 +564,22 @@ export function Dashboard() {
     const id = setInterval(() => setPendingTick(t => t + 1), 15_000);
     return () => clearInterval(id);
   }, []);
+  // Bring the history up to date: LITHO in/out from the Mainnet explorer,
+  // and pending sends settled on their own chain (lib/tx-store.ts). On load
+  // and every minute; a change re-renders the rows.
+  useEffect(() => {
+    let live = true;
+    const run = async () => {
+      const [a, b] = await Promise.all([
+        evmAddress ? syncExplorerHistory(evmAddress).catch(() => false) : Promise.resolve(false),
+        resolvePendingTxs().catch(() => false),
+      ]);
+      if (live && (a || b)) setPendingTick(t => t + 1);
+    };
+    void run();
+    const id = setInterval(() => { void run(); }, 60_000);
+    return () => { live = false; clearInterval(id); };
+  }, [evmAddress]);
 
   const TXS = useMemo(() => {
     // The sends this wallet recorded (the Makalu-only indexer feed is gone).
