@@ -14,6 +14,8 @@
  * Storage key: thanos.pending_txs (JSON array of PendingTx)
  */
 
+import { fetchChainHistory, type HistoryAddresses, type HistoryRow } from '@thanos/sdk-core';
+
 export type PendingTxStatus = 'broadcast' | 'replaced' | 'confirmed' | 'failed';
 
 /** BTC-specific snapshot needed to build an RBF replacement. */
@@ -38,12 +40,17 @@ export interface BtcSnapshot {
 }
 
 export interface PendingTx {
-  /** Stable id — for BTC this IS the txid; for other chains, txid/signature too. */
+  /** Stable id — a send's txid/signature. Rows from the explorers use the
+   *  explorer row id (a swap's legs share one hash) and set `hash`. */
   id:         string;
+  /** The tx hash, when `id` isn't it. */
+  hash?:      string;
   chain:      'bitcoin' | 'evm' | 'solana' | 'cosmos';
   /** EVM chain it went out on — what lets resolvePendingTxs check it. */
   chainId?:   number;
-  /** 'in' for LITHO received (from the Mainnet explorer); sends omit it. */
+  /** Network name from the explorer, e.g. "Base". */
+  network?:   string;
+  /** 'in' for a receive (from the explorers); sends may omit it. */
   direction?: 'in' | 'out';
   symbol:     string;
   recipient:  string;
@@ -132,9 +139,10 @@ export function removeTx(id: string): void {
 
 /* ─── History read layer ────────────────────────────────────────────────
    The Activity feed is this store: every send recorded at broadcast, plus
-   native LITHO in and out on Lithosphere Mainnet from its explorer
-   (syncExplorerHistory). The Thanos indexer only covers the Makalu testnet,
-   which the wallet no longer includes, so nothing else reports them.
+   every transfer in and out on the networks the explorers cover
+   (syncExplorerHistory) — including ones made before Thanos or from another
+   wallet. The Thanos indexer only covers the Makalu testnet, which the
+   wallet no longer includes, so nothing else reports them.
 
    History is kept (client 2026-10-15: sends "still pending" a day later) —
    confirmed and failed rows stay, only the newest MAX_LOCAL are kept, and
@@ -169,12 +177,21 @@ export interface LocalActivityItem {
   txHash:        string;
   ts?:           string;
   status:        'pending' | 'confirmed' | 'failed';
+  /** Network name, when known — EVM sends no explorer has matched yet
+   *  carry only their chainId. */
+  network?:      string;
+  chain:         PendingTx['chain'];
+  chainId?:      number;
   local:         true;
 }
 
+const CHAIN_NETWORK: Partial<Record<PendingTx['chain'], string>> = {
+  bitcoin: 'Bitcoin', solana: 'Solana', cosmos: 'Cosmos Hub',
+};
+
 /**
  * The wallet's history as activity rows, newest first: pending sends, then
- * settled ones (confirmed / failed) and LITHO received on Mainnet. A
+ * settled ones (confirmed / failed) and transfers from the explorers. A
  * replaced (fee-bumped) tx is hidden — its replacement is the live one.
  * Rows whose hash the caller already shows (`indexedHashes`) are skipped.
  */
@@ -182,16 +199,19 @@ export function pendingActivityRows(indexedHashes: Iterable<string>): LocalActiv
   const seen = new Set<string>();
   for (const h of indexedHashes) if (h) seen.add(h.toLowerCase());
   return prunePendingTxs()
-    .filter(t => t.status !== 'replaced' && !seen.has(t.id.toLowerCase()))
+    .filter(t => t.status !== 'replaced' && !seen.has((t.hash ?? t.id).toLowerCase()))
     .map(t => ({
       id:           t.id,
       type:         t.direction === 'in' ? 'receive' as const : 'send' as const,
       symbol:       t.symbol,
       amount:       t.amount,
       counterparty: t.recipient,
-      txHash:       t.id,
+      txHash:       t.hash ?? t.id,
       ts:           new Date(t.broadcastAt).toISOString(),
       status:       t.status === 'broadcast' ? 'pending' as const : t.status === 'failed' ? 'failed' as const : 'confirmed' as const,
+      network:      t.network ?? CHAIN_NETWORK[t.chain],
+      chain:        t.chain,
+      chainId:      t.chainId,
       local:        true as const,
     }));
 }
@@ -282,10 +302,11 @@ async function lookupCosmos(hash: string): Promise<Lookup> {
 }
 
 function lookup(t: PendingTx): Promise<Lookup> {
-  if (t.chain === 'bitcoin') return lookupBitcoin(t.id);
-  if (t.chain === 'solana') return lookupSolana(t.id);
-  if (t.chain === 'cosmos') return lookupCosmos(t.id);
-  return t.chainId != null ? lookupEvmOn(t.chainId, t.id) : lookupEvmAnywhere(t.id);
+  const hash = t.hash ?? t.id;
+  if (t.chain === 'bitcoin') return lookupBitcoin(hash);
+  if (t.chain === 'solana') return lookupSolana(hash);
+  if (t.chain === 'cosmos') return lookupCosmos(hash);
+  return t.chainId != null ? lookupEvmOn(t.chainId, hash) : lookupEvmAnywhere(hash);
 }
 
 let resolving = false;
@@ -318,53 +339,107 @@ export async function resolvePendingTxs(): Promise<boolean> {
   }
 }
 
-/* ─── Lithosphere Mainnet explorer ─────────────────────────────────── */
+/* ─── Full history from each network's explorer ─────────────────────── */
 
-interface ExplorerTx {
-  hash?: string; evmHash?: string; value?: string; inputData?: string;
-  timestamp?: string; evmFromAddr?: string; evmToAddr?: string; success?: boolean;
+/** Every network is read at most this often per wallet; in between, each
+ *  refresh reads Lithosphere Mainnet alone (one request). */
+const FULL_SYNC_MS = 5 * 60 * 1000;
+const syncKey = (evm: string) => `thanos.history_sync:${evm.toLowerCase()}`;
+/** Etherscan API V2 key — turns on BNB Chain and Linea history. */
+const ETHERSCAN_KEY = process.env.NEXT_PUBLIC_ETHERSCAN_API_KEY || undefined;
+
+export type OtherHistoryAddresses = Omit<HistoryAddresses, 'evm'>;
+
+/** The wallet's Bitcoin / Solana / Cosmos addresses for syncExplorerHistory,
+ *  derived as for their balances (Solana and Cosmos need a phrase). The
+ *  chain libraries load on demand. */
+export async function historyAddresses(seed?: string[], privateKey?: string): Promise<OtherHistoryAddresses> {
+  const mnemonic = seed?.length ? seed.join(' ') : '';
+  const out: OtherHistoryAddresses = {};
+  if (!mnemonic && !privateKey) return out;
+  await Promise.all([
+    import('./bitcoin').then(m => {
+      out.bitcoin = m.getBitcoinAddressFromSource(privateKey ? { kind: 'privateKey', privateKey } : { kind: 'mnemonic', mnemonic });
+    }).catch(() => {}),
+    mnemonic ? import('./solana').then(m => { out.solana = m.getSolanaAddress(mnemonic); }).catch(() => {}) : null,
+    mnemonic ? import('./cosmos').then(async m => { out.cosmos = await m.getCosmosAddress(mnemonic); }).catch(() => {}) : null,
+  ]);
+  return out;
 }
 
-/** Save native LITHO in and out for `address` from lithoscan.ai
- *  (GET /api/address/<addr>/txs) into the history: new rows are added as
- *  settled, and a pending send the explorer has seen takes its verdict.
- *  Returns true when anything changed. */
-export async function syncExplorerHistory(address: string): Promise<boolean> {
-  if (!address || typeof window === 'undefined') return false;
-  const r = await fetchJson(`https://lithoscan.ai/api/address/${encodeURIComponent(address)}/txs?limit=50`);
-  const items = (r?.body as { items?: ExplorerTx[]; txs?: ExplorerTx[] } | null)?.items
-    ?? (r?.body as { txs?: ExplorerTx[] } | null)?.txs;
-  if (!Array.isArray(items)) return false;
-  const me = address.toLowerCase();
-  const all = loadPendingTxs();
-  const byId = new Map(all.map(t => [t.id.toLowerCase(), t]));
+/** Fold explorer rows into the saved list: newest first, newest MAX_LOCAL
+ *  kept. A row is saved once, under its own id; a send saved at broadcast
+ *  (keyed by its hash) takes the row's verdict instead of being listed
+ *  twice. `changed` is false when nothing that survives the cap moved. */
+export function mergeHistoryRows(saved: PendingTx[], rows: HistoryRow[], now = Date.now()): { list: PendingTx[]; changed: boolean } {
+  const list = saved.map(t => ({ ...t }));
+  const byKey = new Map<string, PendingTx>();
+  for (const t of list) {
+    byKey.set(t.id.toLowerCase(), t);
+    // Saved under its hash (sends, older LITHO rows): matched on hash and
+    // direction, so a swap's incoming leg still gets its own row.
+    if (!t.hash) byKey.set(`${t.id.toLowerCase()}|${t.direction ?? 'out'}`, t);
+  }
+  const added = new Set<PendingTx>();
   let changed = false;
-  for (const t of items) {
-    const from = (t.evmFromAddr ?? '').toLowerCase();
-    const to = (t.evmToAddr ?? '').toLowerCase();
-    if (from !== me && to !== me) continue;
-    if ((t.inputData ?? '0x') !== '0x') continue; // native transfers only
-    let wei = 0n;
-    try { wei = BigInt(t.value ?? '0'); } catch { continue; }
-    if (wei <= 0n) continue;
-    const hash = t.evmHash || t.hash || '';
-    if (!hash) continue;
-    const status: PendingTxStatus = t.success === false ? 'failed' : 'confirmed';
-    const hit = byId.get(hash.toLowerCase());
+  for (const r of rows) {
+    const id = r.id || r.hash;
+    if (!id) continue;
+    const hit = byKey.get(id.toLowerCase()) ?? byKey.get(`${r.hash.toLowerCase()}|${r.direction}`);
     if (hit) {
-      if (hit.status === 'broadcast') { hit.status = status; hit.updatedAt = Date.now(); changed = true; }
+      if (hit.status === 'broadcast' && r.status !== 'pending') { hit.status = r.status; hit.updatedAt = now; changed = true; }
+      if (!hit.network) { hit.network = r.networkName; changed = true; }
       continue;
     }
-    const ts = t.timestamp ? Date.parse(t.timestamp) : NaN;
-    const row: PendingTx = {
-      id: hash, chain: 'evm', chainId: 9005, symbol: 'LITHO',
-      recipient: to === me ? (t.evmFromAddr ?? '') : (t.evmToAddr ?? ''),
-      amount: (Number(wei) / 1e18).toLocaleString('en-US', { maximumFractionDigits: 8, useGrouping: false }),
-      direction: to === me ? 'in' : 'out',
-      status, broadcastAt: Number.isFinite(ts) ? ts : Date.now(), updatedAt: Date.now(),
+    const tx: PendingTx = {
+      id, hash: r.hash, chain: r.chain,
+      ...(r.chainId != null ? { chainId: r.chainId } : {}),
+      network: r.networkName, direction: r.direction,
+      symbol: r.sym, recipient: r.counterparty ?? '', amount: r.amount,
+      ...(r.tokenAddress ? { tokenAddress: r.tokenAddress } : {}),
+      status: r.status === 'pending' ? 'broadcast' : r.status,
+      broadcastAt: r.ts, updatedAt: now,
     };
-    all.push(row); byId.set(hash.toLowerCase(), row); changed = true;
+    list.push(tx); added.add(tx); byKey.set(id.toLowerCase(), tx);
   }
-  if (changed) saveAll(all);
-  return changed;
+  const kept = list.sort((a, b) => (b.broadcastAt || 0) - (a.broadcastAt || 0)).slice(0, MAX_LOCAL);
+  // A row older than everything kept would only be dropped again.
+  return { list: kept, changed: changed || kept.some(t => added.has(t)) };
+}
+
+let syncing = false;
+/** Save the wallet's transfers from each network's explorer (sdk-core
+ *  fetchChainHistory) into the history: every network the explorers cover
+ *  at most every FULL_SYNC_MS per wallet, Lithosphere Mainnet alone in
+ *  between. `others` are its non-EVM addresses (historyAddresses).
+ *  Returns true when anything changed. */
+export async function syncExplorerHistory(address: string, others: OtherHistoryAddresses = {}): Promise<boolean> {
+  if (!address || syncing || typeof window === 'undefined') return false;
+  syncing = true;
+  try {
+    let last = 0;
+    try { last = Number(localStorage.getItem(syncKey(address))) || 0; } catch { /* storage off */ }
+    const full = Date.now() - last >= FULL_SYNC_MS;
+    // Tokens the wallet lists (built-in + user-added) always show.
+    const knownTokens = full
+      ? await import('./custom-assets').then(m => m.allEvmTokens().map(t => ({ chainId: t.chainId, address: t.address }))).catch(() => [])
+      : [];
+    const { rows } = await fetchChainHistory({ evm: address, ...others }, {
+      sources:      full ? 'all' : 'lithosphere',
+      lithoPages:   full ? 5 : 1,
+      // Solana skips the per-transaction lookup for these.
+      knownHashes:  loadPendingTxs().map(t => t.hash ?? t.id),
+      knownTokens,
+      etherscanKey: ETHERSCAN_KEY,
+    });
+    // Stamped even when a source failed: it's retried next window, not on
+    // every refresh.
+    if (full) { try { localStorage.setItem(syncKey(address), String(Date.now())); } catch { /* storage off */ } }
+    // Re-read: a send may have been saved while the explorers answered.
+    const { list, changed } = mergeHistoryRows(loadPendingTxs(), rows);
+    if (changed) saveAll(list);
+    return changed;
+  } finally {
+    syncing = false;
+  }
 }

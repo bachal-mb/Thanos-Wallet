@@ -31,7 +31,7 @@ import {
   getAllEvmNativeBalancesMerged, getAllEvmTokenBalancesMerged, getEvmChainMerged,
   type EvmTokenLike,
 } from '../lib/custom-assets';
-import { pendingActivityRows, resolvePendingTxs, syncExplorerHistory } from '../lib/tx-store';
+import { historyAddresses, pendingActivityRows, resolvePendingTxs, syncExplorerHistory } from '../lib/tx-store';
 import { TransactionDetailModal } from './TransactionDetailModal';
 
 import { TOKENS } from '../lib/tokens';
@@ -51,6 +51,8 @@ function projectActivity(item: IndexerActivityItem & { local?: boolean }) {
   return {
     sym:    item.symbol,
     name:   canon?.name ?? item.symbol,
+    // History spans every network — say which (ETH on Base vs on Ethereum).
+    network: item.network ?? (item.chainId != null ? getEvmChainMerged(item.chainId)?.name : undefined),
     date:   item.ts ? new Date(item.ts).toLocaleDateString() : '—',
     price:  canon ? withCurrencyAffix(convertFromUsd(canon.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 4 })) : '—',
     status: item.status === 'pending' ? 'Pending' : item.status === 'failed' ? 'Failed' : 'Completed',
@@ -564,14 +566,16 @@ export function Dashboard() {
     const id = setInterval(() => setPendingTick(t => t + 1), 15_000);
     return () => clearInterval(id);
   }, []);
-  // Bring the history up to date: LITHO in/out from the Mainnet explorer,
-  // and pending sends settled on their own chain (lib/tx-store.ts). On load
-  // and every minute; a change re-renders the rows.
+  // Bring the history up to date: transfers on every network from the
+  // explorers, and pending sends settled on their own chain
+  // (lib/tx-store.ts). On load and every minute; a change re-renders the rows.
   useEffect(() => {
     let live = true;
+    // Bitcoin / Solana / Cosmos addresses, derived once per wallet.
+    const others = historyAddresses(walletSeed, walletPk).catch(() => ({}));
     const run = async () => {
       const [a, b] = await Promise.all([
-        evmAddress ? syncExplorerHistory(evmAddress).catch(() => false) : Promise.resolve(false),
+        evmAddress ? others.then(o => syncExplorerHistory(evmAddress, o)).catch(() => false) : Promise.resolve(false),
         resolvePendingTxs().catch(() => false),
       ]);
       if (live && (a || b)) setPendingTick(t => t + 1);
@@ -579,11 +583,11 @@ export function Dashboard() {
     void run();
     const id = setInterval(() => { void run(); }, 60_000);
     return () => { live = false; clearInterval(id); };
-  }, [evmAddress]);
+  }, [evmAddress, walletSeed, walletPk]);
 
   const TXS = useMemo(() => {
-    // The sends this wallet recorded (the Makalu-only indexer feed is gone).
-    // Cap at 6 like before.
+    // The wallet's history: its sends plus every network's explorer (the
+    // Makalu-only indexer feed is gone). Cap at 6 like before.
     return pendingActivityRows([]).map(projectActivity).slice(0, 6);
     // pendingTick forces re-eval after a send / on the interval.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1122,7 +1126,7 @@ export function Dashboard() {
               No activity yet
             </div>
             <div style={{ fontSize: 12, maxWidth: 360 }}>
-              Every Send you make from this wallet lands here.
+              Everything this wallet sends and receives, on every network, lands here.
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
               <button className="settings-btn" onClick={() => setModal('receive')}>
@@ -1151,7 +1155,7 @@ export function Dashboard() {
                         <TokenIcon sym={tx.sym} color={tx.color} size={36} style={{ borderRadius: 10 }}/>
                         <div>
                           <div className="tx-name">{tx.name}</div>
-                          <div className="tx-sym">{tx.sym}</div>
+                          <div className="tx-sym">{tx.network ? `${tx.sym} · ${tx.network}` : tx.sym}</div>
                         </div>
                       </div>
                     </td>

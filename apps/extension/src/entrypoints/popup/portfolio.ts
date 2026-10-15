@@ -4,16 +4,17 @@
  * Reads balances straight from each chain's RPC (Lithosphere Mainnet, the
  * external EVM chains, custom networks, BTC/SOL/ATOM) and prices them via
  * @thanos/sdk-core's CoinGecko pricing. Activity is the wallet's own history
- * (lib/local-activity.ts): sends, settled on their own chain; native LITHO in
- * and out from the Lithosphere explorer; and funds received on every other
- * network, noticed as balance increases (lib/incoming.ts). (The Thanos
+ * (lib/local-activity.ts): sends, settled on their own chain; the full history
+ * of every network from its explorer (lib/explorer-activity.ts); and funds
+ * received on a network no explorer covers, noticed as balance increases
+ * (lib/incoming.ts). (The Thanos
  * indexer only covers the Makalu testnet, which the wallet no longer
  * includes — 2026-09-29.)
  */
 import { createContext, useContext, useEffect, useState } from 'react';
 import { fetchEcosystemPrices, formatFiat } from '@thanos/sdk-core';
 import { getLocalActivity, addLocalReceive, mergeExplorerRows, resolvePendingActivity, rowId } from '../../lib/local-activity';
-import { fetchMainnetNativeActivity } from '../../lib/explorer-activity';
+import { fetchWalletHistory, HISTORY_EVM_CHAIN_IDS } from '../../lib/explorer-activity';
 import { detectIncoming, watchKeyEvm, watchKeyNative, type WatchedBalance } from '../../lib/incoming';
 import { loadSnapshot, saveSnapshot } from './portfolio-cache';
 
@@ -55,6 +56,26 @@ function relativeTime(iso?: string): string {
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 
+/** Explorer page for a Bitcoin / Solana / Cosmos transaction (EVM ones come
+ *  from the on-chain detail lookup, which knows the chain). */
+function nonEvmTxUrl(chain: string, hash: string): string | undefined {
+  if (!hash) return undefined;
+  if (chain === 'bitcoin') return `https://mempool.space/tx/${hash}`;
+  if (chain === 'solana') return `https://explorer.solana.com/tx/${hash}`;
+  if (chain === 'cosmos') return `https://www.mintscan.io/cosmos/tx/${hash}`;
+  return undefined;
+}
+
+/** Amount for a list row: explorers report every wei (0.000151744025760472),
+ *  which crowds the row — round like the balances; dust keeps 2 significant
+ *  digits instead of rounding to 0. */
+function listAmount(amt: string): string {
+  const n = parseFloat(amt.replace(/,/g, ''));
+  if (!isFinite(n) || n <= 0) return amt;
+  const shown = formatAmount(n);
+  return shown === '0' ? n.toLocaleString('en-US', { maximumSignificantDigits: 2 }) : shown;
+}
+
 /** The wallet's history (lib/local-activity.ts) as display rows, newest
  *  first. "Pending" only while a send hasn't been settled on its chain. */
 function activityFromStore(address: string): DisplayTx[] {
@@ -66,24 +87,29 @@ function activityFromStore(address: string): DisplayTx[] {
       id: rowId(t),
       sym: t.sym,
       label: t.label,
-      amount: `${received ? '+' : '-'}${amt}`,
+      amount: `${received ? '+' : '-'}${listAmount(amt)}`,
       time: relativeTime(new Date(t.ts).toISOString()) || 'just now',
+      ...(t.networkName ? { network: t.networkName } : {}),
+      ...(t.chainId != null ? { chainId: t.chainId } : {}),
+      ...(nonEvmTxUrl(t.chain, t.hash) ? { explorerUrl: nonEvmTxUrl(t.chain, t.hash) } : {}),
       pos: received,
       color: coinColor(t.sym),
       ...(t.hash ? { txHash: t.hash } : {}),
       ts: new Date(t.ts).toISOString(),
-      rawAmount: parseFloat(amt) || 0,
+      rawAmount: parseFloat(amt.replace(/,/g, '')) || 0,
       status,
       pending: status === 'pending' ? true : undefined,
     };
   });
 }
 
-/** Funds received (lib/incoming.ts) go into the history. Native LITHO on
- *  Lithosphere Mainnet is skipped here — the explorer lists it with its hash. */
+/** Funds received (lib/incoming.ts) go into the history — only on networks
+ *  no explorer covers; everywhere else the explorer lists the transfer with
+ *  its hash and time (lib/explorer-activity.ts). BTC/SOL/ATOM are read only
+ *  with the phrase unlocked, and then their history is read too. */
 function recordIncoming(address: string, reads: WatchedBalance[]): void {
   for (const rx of detectIncoming(address, reads)) {
-    if (rx.chainId === 9005 && !rx.tokenAddress) continue;
+    if (rx.chain !== 'evm' || (rx.chainId != null && HISTORY_EVM_CHAIN_IDS.has(rx.chainId))) continue;
     const now = Date.now();
     addLocalReceive(address, {
       id: `recv:${rx.key}:${now}`, chain: rx.chain, sym: rx.sym, amount: formatAmount(rx.amount), ts: now,
@@ -107,6 +133,12 @@ export interface DisplayTx {
   id: string; sym: string;
   label: 'Sent' | 'Received' | 'Swap' | 'Activity';
   amount: string; time: string; pos: boolean; color: string;
+  /** Network it happened on ("Base", "Bitcoin", …). */
+  network?: string;
+  /** EVM chain — the detail lookup goes straight to it. */
+  chainId?: number;
+  /** Explorer page for a non-EVM transaction. */
+  explorerUrl?: string;
   /** Raw fields the detail modal needs (the display strings above are lossy):
    *  hash for the on-chain fee/nonce lookup, ISO timestamp for the date-time
    *  line, numeric amount for the ≈fiat hero, raw indexer status. */
@@ -170,24 +202,29 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
 
         // Cross-chain native positions — only when seed is unlocked.
         const xchain: DisplayCoin[] = [];
+        // Their addresses also feed the history read below.
+        const xAddrs: { bitcoin?: string; solana?: string; cosmos?: string } = {};
         if (seedKey) {
           const phrase = seedKey;
           const tries = await Promise.allSettled([
             (async () => {
               const m = await import('../../lib/bitcoin');
               const addr = m.getBitcoinAddress(phrase);
+              xAddrs.bitcoin = addr;
               const bal = parseFloat(await m.getBitcoinBalance(addr)) || 0;
               return { sym: 'BTC',  name: 'Bitcoin',    bal, decimals: 8 };
             })(),
             (async () => {
               const m = await import('../../lib/solana');
               const addr = m.getSolanaAddress(phrase);
+              xAddrs.solana = addr;
               const bal = parseFloat(await m.getSolanaBalance(addr)) || 0;
               return { sym: 'SOL',  name: 'Solana',     bal, decimals: 9 };
             })(),
             (async () => {
               const m = await import('../../lib/cosmos');
               const addr = await m.getCosmosAddress(phrase);
+              xAddrs.cosmos = addr;
               const bal = parseFloat(await m.getCosmosBalance(addr)) || 0;
               return { sym: 'ATOM', name: 'Cosmos Hub', bal, decimals: 6 };
             })(),
@@ -269,11 +306,12 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
         const mergedActivity = activityFromStore(address);
         setState({ coins, activity: mergedActivity, totalUsd, loading: false, offline: false });
         // Then bring the history up to date without holding up the balances:
-        // Lithosphere explorer rows (receives, sends from other devices) and
-        // pending sends settled on their own chain.
+        // every network's explorer rows (older history, receives, sends from
+        // other devices) and pending sends settled on their own chain.
         void (async () => {
-          const explorer = await fetchMainnetNativeActivity(address).catch(() => null);
-          if (explorer) mergeExplorerRows(address, explorer);
+          const known = getLocalActivity(address).map((t) => t.hash).filter(Boolean);
+          const history = await fetchWalletHistory({ evm: address, ...xAddrs }, known).catch(() => null);
+          if (history) mergeExplorerRows(address, history);
           await resolvePendingActivity(address).catch(() => null);
           if (cancelled) return;
           const activity = activityFromStore(address);

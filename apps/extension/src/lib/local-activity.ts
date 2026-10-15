@@ -6,11 +6,12 @@
  * only covers the Makalu testnet, which the wallet no longer includes — so
  * this store IS the Activity feed:
  *   - every send, recorded at broadcast with the chain it went out on;
- *   - native LITHO in and out on Lithosphere Mainnet, from its explorer
- *     (lib/explorer-activity.ts), saved here so it stays after leaving the
- *     explorer's latest page;
- *   - funds received on every other network, noticed as a balance increase
- *     (lib/incoming.ts).
+ *   - the wallet's full history on every network, from each network's
+ *     explorer (lib/explorer-activity.ts — client 2026-10-15: "all previous
+ *     transactions"), saved here so it stays after leaving an explorer's
+ *     latest page;
+ *   - funds received on a network no explorer covers, noticed as a balance
+ *     increase (lib/incoming.ts).
  *
  * History is kept (client 2026-10-14: sends "still pending" a day later, and
  * earlier "keep the history of txn") — rows are no longer dropped after 24h,
@@ -87,18 +88,41 @@ export function addLocalReceive(addr: string, rx: Omit<LocalTx, 'hash' | 'label'
   write(addr, [{ ...rx, hash: '', label: 'Received', status: 'confirmed' }, ...arr]);
 }
 
-/** Save rows the explorer reported. A pending send with the same hash takes
- *  the explorer's verdict; anything new (a receive, or a send made on another
- *  device) is added. Returns true when something changed. */
+const amountOf = (s: string) => parseFloat(String(s).replace(/[^0-9.]/g, '')) || 0;
+
+/** Save rows the explorers reported (lib/explorer-activity.ts — one row per
+ *  transfer, each with an id). The same transfer saved before — a send made
+ *  here, or a row from before rows had ids — is matched by hash and direction
+ *  and takes the explorer's verdict instead of being added twice. A receive
+ *  noticed from a balance increase (no hash) gives way to the explorer's row
+ *  for it. Anything else is new (older history, or another device's send).
+ *  Returns true when something changed. */
 export function mergeExplorerRows(addr: string, rows: LocalTx[]): boolean {
   if (!addr || rows.length === 0) return false;
   const arr = read(addr);
-  const byHash = new Map(arr.filter((t) => t.hash).map((t) => [t.hash.toLowerCase(), t]));
+  const byId = new Map(arr.map((t) => [rowId(t).toLowerCase(), t]));
   let changed = false;
   for (const r of rows) {
-    const hit = byHash.get(r.hash.toLowerCase());
-    if (!hit) { arr.push(r); byHash.set(r.hash.toLowerCase(), r); changed = true; continue; }
-    if ((hit.status ?? 'pending') === 'pending' && r.status && r.status !== 'pending') { hit.status = r.status; changed = true; }
+    const id = rowId(r).toLowerCase();
+    const hit = byId.get(id)
+      ?? arr.find((t) => !t.id && !!t.hash && t.hash.toLowerCase() === r.hash.toLowerCase() && t.label === r.label);
+    if (hit) {
+      if (!hit.id && r.id) { byId.delete(rowId(hit).toLowerCase()); hit.id = r.id; byId.set(id, hit); changed = true; }
+      if (r.status && r.status !== 'pending' && hit.status !== r.status) { hit.status = r.status; changed = true; }
+      if (hit.chainId == null && r.chainId != null) { hit.chainId = r.chainId; hit.networkName = r.networkName; changed = true; }
+      continue;
+    }
+    if (r.label === 'Received') {
+      const a = amountOf(r.amount);
+      const noticed = arr.findIndex((t) => !t.hash && t.label === 'Received' && t.sym === r.sym
+        && (t.chainId ?? t.chain) === (r.chainId ?? r.chain)
+        && Math.abs(amountOf(t.amount) - a) <= Math.max(1e-8, a * 1e-4)
+        && t.ts >= r.ts - 5 * 60_000 && t.ts - r.ts < 3 * DROPPED_AFTER_MS);
+      if (noticed >= 0) arr.splice(noticed, 1);
+    }
+    arr.push(r);
+    byId.set(id, r);
+    changed = true;
   }
   if (changed) write(addr, arr);
   return changed;

@@ -28,7 +28,7 @@ import {
   syncContactsFromServer, onContactsChanged,
   type Contact,
 } from '../lib/address-book';
-import { loadPendingTxs, pendingActivityRows, resolvePendingTxs, syncExplorerHistory, type PendingTx } from '../lib/tx-store';
+import { historyAddresses, loadPendingTxs, pendingActivityRows, resolvePendingTxs, syncExplorerHistory, type PendingTx } from '../lib/tx-store';
 import { BumpFeeModal } from './BumpFeeModal';
 import { bitcoinExplorerUrl } from '../lib/bitcoin';
 import { BookUser, Plus, Trash2, ArrowUpRight, Zap } from 'lucide-react';
@@ -437,7 +437,10 @@ function activityToRow(item: IndexerActivityItem) {
   // formatTokenAmount by decimals). Re-applying formatUnits collapsed a
   // whole-number "30" (= 30 wei) to ~0 — parse directly, matching the dashboard.
   const n = parseFloat(String(item.amount).replace(/^[+-]/, '')) || 0;
-  const amountStr = n.toLocaleString('en-US', { maximumFractionDigits: 6 });
+  // Dust (explorer history reports every wei) would round to "0".
+  const amountStr = n > 0 && n < 0.000001
+    ? n.toLocaleString('en-US', { maximumSignificantDigits: 2 })
+    : n.toLocaleString('en-US', { maximumFractionDigits: 6 });
   const isOut = item.type === 'send' || item.type === 'burn';
   const typeLabel =
     item.type === 'send'    ? 'Send'    :
@@ -447,6 +450,8 @@ function activityToRow(item: IndexerActivityItem) {
   return {
     sym:    item.symbol,
     name:   canon?.name ?? item.symbol,
+    // History spans every network — say which (ETH on Base vs on Ethereum).
+    network: item.network ?? (item.chainId != null ? customAssets.getEvmChainMerged(item.chainId)?.name : undefined),
     date:   item.ts ? new Date(item.ts).toLocaleDateString() : '—',
     price:  canon ? fmtUsd(canon.priceUsd, 4) : '—',
     type:   typeLabel,
@@ -463,11 +468,13 @@ export function TransactionsView() {
   useDisplayCurrency();
   const wallet = useWallet();
   const evmAddress = wallet?.evmAddress;
+  const walletSeed = wallet?.seed;
+  const walletPk   = wallet?.privateKey;
   const [filter, setFilter] = useState<'All'|'Send'|'Receive'|'Swap'>('All');
   // Settled history: the wallet's own sends once their chain confirms (or
-  // fails) them, and LITHO in/out on Lithosphere Mainnet from its explorer —
+  // fails) them, and every transfer in/out the networks' explorers report —
   // lib/tx-store.ts. (The Thanos indexer covers the Makalu testnet only, no
-  // longer part of the wallet.) Unsettled sends are in the Pending section.
+  // longer part of the wallet.) Unsettled ones are in the Pending section.
   const [histTick, setHistTick] = useState(0);
   const live: IndexerActivityItem[] = useMemo(
     () => pendingActivityRows([]).filter(r => r.status !== 'pending'),
@@ -487,13 +494,16 @@ export function TransactionsView() {
     window.addEventListener('storage', refresh);
     return () => window.removeEventListener('storage', refresh);
   }, []);
-  // Settle pending sends on their own chain and pull Mainnet LITHO history —
-  // on open and every 30 s while the page is up.
+  // Settle pending sends on their own chain and pull the explorers' history
+  // (every network at most every 5 min, Lithosphere in between) — on open
+  // and every 30 s while the page is up.
   useEffect(() => {
     let alive = true;
+    // Bitcoin / Solana / Cosmos addresses, derived once per wallet.
+    const others = historyAddresses(walletSeed, walletPk).catch(() => ({}));
     const run = async () => {
       await Promise.all([
-        evmAddress ? syncExplorerHistory(evmAddress).catch(() => false) : Promise.resolve(false),
+        evmAddress ? others.then(o => syncExplorerHistory(evmAddress, o)).catch(() => false) : Promise.resolve(false),
         resolvePendingTxs().catch(() => false),
       ]);
       if (!alive) return;
@@ -503,7 +513,7 @@ export function TransactionsView() {
     void run();
     const id = setInterval(() => { void run(); }, 30_000);
     return () => { alive = false; clearInterval(id); };
-  }, [evmAddress]);
+  }, [evmAddress, walletSeed, walletPk]);
 
   // Keep the raw item beside its display row so a click can open the detail
   // modal (which needs hash/counterparty/ts, not the formatted row).
@@ -551,10 +561,11 @@ export function TransactionsView() {
                   <TokenIcon sym={tx.symbol} size={32} style={{ borderRadius: 10 }}/>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      Send {tx.amount} {tx.symbol}
+                      {/* An explorer can report a receive still unconfirmed. */}
+                      {tx.direction === 'in' ? 'Receive' : 'Send'} {tx.amount} {tx.symbol}{tx.network ? ` · ${tx.network}` : ''}
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      → {tx.recipient}
+                      {tx.direction === 'in' ? '←' : '→'} {tx.recipient}
                     </div>
                     {tx.btc && (
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
@@ -564,7 +575,7 @@ export function TransactionsView() {
                   </div>
                   {tx.chain === 'bitcoin' && (
                     <a
-                      href={bitcoinExplorerUrl(tx.id)}
+                      href={bitcoinExplorerUrl(tx.hash ?? tx.id)}
                       target="_blank"
                       rel="noreferrer"
                       title="View on mempool.space"
@@ -604,7 +615,7 @@ export function TransactionsView() {
         )}
 
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <table className="data-table">
+          <table className="data-table tx-table">
             <thead>
               <tr>
                 <th>Asset</th>
@@ -623,7 +634,7 @@ export function TransactionsView() {
                       <TokenIcon sym={tx.sym} color={tx.color} size={36} style={{ borderRadius: 10 }}/>
                       <div>
                         <div className="tx-name">{tx.name}</div>
-                        <div className="tx-sym">{tx.sym}</div>
+                        <div className="tx-sym">{tx.network ? `${tx.sym} · ${tx.network}` : tx.sym}</div>
                       </div>
                     </div>
                   </td>

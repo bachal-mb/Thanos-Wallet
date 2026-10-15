@@ -72,9 +72,15 @@ function buildCsp(nonce) {
       // Mainnet (9005): rpc-mainnet, its only RPC.
       + " https://rpc.litho.ai https://rpc-2.litho.ai https://rpc-3.litho.ai https://api-3.litho.ai"
       + " https://rpc-mainnet.litho.ai"
-      // Lithosphere Mainnet explorer — LITHO in/out for Activity
-      // (lib/tx-store.ts syncExplorerHistory).
+      // Block explorers for Activity's full history (lib/tx-store.ts
+      // syncExplorerHistory → sdk-core fetchChainHistory): LithoScan, Blockscout
+      // (Ethereum, Base, Arbitrum, Polygon, Optimism), Routescan (Avalanche),
+      // Etherscan V2 (BNB Chain + Linea, only with a key). Bitcoin, Solana and
+      // Cosmos history use the mempool.space / publicnode hosts below.
       + " https://lithoscan.ai"
+      + " https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com"
+      + " https://polygon.blockscout.com https://explorer.optimism.io"
+      + " https://api.routescan.io https://api.etherscan.io"
       + " https://bridge.litho.ai" + multxOrigin()
       + " https://ignite.trade"
       // Quantt AI agents — native wallet sign-in + /v1/mobile BFF. api.quantts.ai

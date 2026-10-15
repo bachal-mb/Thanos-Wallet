@@ -138,7 +138,8 @@ export function TransactionDetailModal({ item, onClose }: { item: IndexerActivit
                 <span style={{ fontFamily: 'Geist Mono, monospace' }}>{shortAddr(counterparty)}</span>
               </DetailRow>
             )}
-            {det?.networkName && <DetailRow label="Network">{det.networkName}</DetailRow>}
+            {/* A history row knows its network; a lookup fills in the rest. */}
+            {(item.network ?? det?.networkName) && <DetailRow label="Network">{item.network ?? det?.networkName}</DetailRow>}
           </div>
 
           {/* Network fee / Nonce (EVM hashes only) */}

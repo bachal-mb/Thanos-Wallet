@@ -45,4 +45,15 @@ describe('buildCsp', () => {
     const blocked = rpcs.map((u) => new URL(u).origin).filter((o) => !connect.includes(o));
     expect(blocked).toEqual([]);
   });
+
+  it('lets Activity read every explorer sdk-core fetchChainHistory calls', () => {
+    const connect = directives(buildCsp()).get('connect-src')!.split(' ');
+    const explorers = [
+      'https://lithoscan.ai', 'https://eth.blockscout.com', 'https://base.blockscout.com',
+      'https://arbitrum.blockscout.com', 'https://polygon.blockscout.com', 'https://explorer.optimism.io',
+      'https://api.routescan.io', 'https://api.etherscan.io', 'https://mempool.space',
+      'https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com', 'https://cosmos-rest.publicnode.com',
+    ];
+    expect(explorers.filter((o) => !connect.includes(o))).toEqual([]);
+  });
 });

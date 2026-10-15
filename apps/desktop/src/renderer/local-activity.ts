@@ -1,17 +1,17 @@
 /**
- * Optimistic local activity log (desktop).
- *
- * Only native LITHO on Lithosphere Mainnet has an explorer feed
- * (explorer-activity.ts), so most sends would never appear in the Activity
- * feed. We record every successful send locally (keyed by the wallet's EVM
- * address) and the portfolio hook merges it in, deduped against the explorer
- * feed by tx hash.
+ * The Activity feed, kept on this device (desktop), keyed by the wallet's EVM
+ * address:
+ *   - every successful send, recorded at broadcast (addLocalActivity);
+ *   - the wallet's full history on every network, from each network's
+ *     explorer (explorer-activity.ts — client 2026-10-15: "all previous
+ *     transactions"), saved here so it stays after leaving an explorer's
+ *     latest page (mergeHistoryRows).
  *
  * RESOLUTION (added 2026-09-16, client-reported "need all activity to show" /
- * stuck-Pending rows): a Mainnet native LITHO send is promoted out of
- * "Pending" by the explorer feed. Everything else has no explorer coverage —
- * resolvePendingActivity() polls the tx's OWN chain RPC directly for a
- * receipt and flips the stored status in place, so the row stays (doesn't
+ * stuck-Pending rows): a send is promoted out of "Pending" by its explorer's
+ * row where an explorer covers the network. Until then (and on every other
+ * network) resolvePendingActivity() polls the tx's OWN chain RPC directly for
+ * a receipt and flips the stored status in place, so the row stays (doesn't
  * vanish) but shows as sent/failed correctly.
  *
  * HISTORY (2026-10-15, client: sends "still pending" a day later): rows are
@@ -33,6 +33,14 @@ export interface LocalTx {
   /** Absent/'pending' = still unresolved. Rows recorded before this field
    *  existed are treated as pending (backward compatible). */
   status?:  'pending' | 'confirmed' | 'failed';
+  /** Explorer rows: fetchChainHistory's per-transfer id (a swap's legs share
+   *  one hash). A send recorded here has none until its explorer reports it. */
+  id?:           string;
+  /** Absent = a send made here. */
+  direction?:    'in' | 'out';
+  networkName?:  string;
+  counterparty?: string;
+  tokenAddress?: string;
 }
 
 const keyFor = (addr: string) => `thanos-local-activity:${(addr || '').toLowerCase()}`;
@@ -49,7 +57,7 @@ export function getLocalActivity(addr: string): LocalTx[] {
     if (!Array.isArray(arr)) return [];
     // History is kept; a send that never settles is marked failed by
     // resolvePendingActivity instead of being deleted.
-    return (arr as LocalTx[]).filter((t) => typeof t?.ts === 'number' && !!t.hash);
+    return (arr as LocalTx[]).filter((t) => Number.isFinite(t?.ts) && !!t.hash);
   } catch {
     return [];
   }
@@ -63,6 +71,52 @@ export function addLocalActivity(addr: string, tx: LocalTx): void {
     localStorage.setItem(keyFor(addr), JSON.stringify([{ ...tx, status: 'pending' as const }, ...arr].slice(0, MAX)));
   } catch {
     /* storage full / disabled — non-fatal */
+  }
+}
+
+const keyOf = (t: LocalTx) => (t.id || t.hash).toLowerCase();
+
+/** Save rows the explorers reported (explorer-activity.ts), deduped by row id
+ *  (a row without one by hash). A send recorded here with the same hash takes
+ *  the explorer's verdict instead of being listed twice — its outgoing row
+ *  takes the send's place, keeping what was recorded at broadcast. Anything
+ *  else is new (older history, a receive, or a send from another wallet).
+ *  Keeps the newest MAX. Returns true when the saved list changed. */
+export function mergeHistoryRows(addr: string, rows: LocalTx[]): boolean {
+  if (!addr || rows.length === 0 || typeof localStorage === 'undefined') return false;
+  const arr = getLocalActivity(addr);
+  const byKey = new Map(arr.map((t) => [keyOf(t), t]));
+  const settle = (t: LocalTx, r: LocalTx) => {
+    if (r.status && r.status !== 'pending') t.status = r.status;
+  };
+  for (const r of rows) {
+    const hit = byKey.get(keyOf(r));
+    if (hit) { settle(hit, r); continue; }
+    const sent = arr.find((t) => !t.id && t.hash.toLowerCase() === r.hash.toLowerCase());
+    if (sent) settle(sent, r);
+    if (sent && r.direction === 'out') {
+      byKey.delete(keyOf(sent));
+      Object.assign(sent, {
+        id: r.id, direction: r.direction, networkName: r.networkName,
+        counterparty: r.counterparty, tokenAddress: r.tokenAddress,
+        chainId: sent.chainId ?? r.chainId,
+      });
+      byKey.set(keyOf(sent), sent);
+      continue;
+    }
+    arr.push(r);
+    byKey.set(keyOf(r), r);
+  }
+  arr.sort((a, b) => b.ts - a.ts);
+  // Compared as saved: past MAX, the oldest rows come back from every full
+  // read and drop off again — that isn't a change.
+  const next = JSON.stringify(arr.slice(0, MAX));
+  try {
+    if (localStorage.getItem(keyFor(addr)) === next) return false;
+    localStorage.setItem(keyFor(addr), next);
+    return true;
+  } catch {
+    return false; // storage full / disabled — non-fatal
   }
 }
 
