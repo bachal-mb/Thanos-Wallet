@@ -1967,6 +1967,9 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   .tx-table th:nth-child(4),
   .tx-table td:nth-child(4) { display: none; }
   .tx-table .amt-pos, .tx-table .amt-neg { font-size: 13px; }
+  /* A table runs edge to edge in its card: the phone .card padding above
+     (!important) pushed it 12px right and clipped the Amount column. */
+  .card.table-card { padding: 0 !important; }
   .tx-avatar { width: 28px !important; height: 28px !important; font-size: 11px !important; }
   .tx-name   { font-size: 13px !important; }
   .tx-sym    { font-size: 11px !important; }

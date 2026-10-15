@@ -205,7 +205,7 @@ export function MarketView() {
             <input placeholder="Search coins…" value={search} onChange={e => setSearch(e.target.value)} className="search-field-input"/>
           </div>
         </div>
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="card table-card" style={{ padding: 0, overflow: 'hidden' }}>
           <table className="data-table" style={{ tableLayout: 'fixed' }}>
             <thead>
               <tr>
@@ -614,7 +614,7 @@ export function TransactionsView() {
           />
         )}
 
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="card table-card" style={{ padding: 0, overflow: 'hidden' }}>
           <table className="data-table tx-table">
             <thead>
               <tr>
