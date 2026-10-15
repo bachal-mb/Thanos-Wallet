@@ -103,7 +103,7 @@ properties to check ("For the audit").
 | Mobile copy of the core matches the source | $(grep -q 'out of date' "$out/results/mobile-copy-check.txt" && echo "differs" || echo "matches") | \`results/mobile-copy-check.txt\` |
 | Web unit tests (vault, CSP, …) | $(passing "$out/results/web-unit-tests.txt") | \`results/web-unit-tests.txt\` |
 | Typecheck, every workspace | $(grep -Eo 'Tasks: +[0-9]+ successful, [0-9]+ total' "$out/results/typecheck.txt" | tail -1) | \`results/typecheck.txt\` |
-| Web end-to-end (create, propose, approve, execute) | $( [ "${RUN_E2E:-}" = "1" ] && grep -Eo '[0-9]+ passed' "$out/results/web-e2e.txt" | tail -1 || echo "not run in this package; see docs/MULTISIG.md, Tests") | \`results/web-e2e.txt\` |
+$( [ "${RUN_E2E:-}" = "1" ] && echo "| Web end-to-end (create, propose, approve, execute) | $(grep -Eo '[0-9]+ passed' "$out/results/web-e2e.txt" | tail -1) | \`results/web-e2e.txt\` |" || echo "| Web end-to-end (create, propose, approve, execute) | not run in this package (RUN_E2E=1); see docs/MULTISIG.md, Tests | — |")
 
 ## Contents
 
