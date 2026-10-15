@@ -9,6 +9,7 @@ import {
   Pencil, Trash2, X, ArrowUpRight, ArrowDownLeft, Clock,
 } from 'lucide-react';
 import { getAccountName, getVisibleAccountIndices } from '../../lib/vault';
+import { displayAddress, LITHO_MAINNET_CHAIN_ID } from '../../lib/address';
 import { TOKENS } from '../../lib/tokens';
 import { type IndexerActivityItem } from '../../lib/indexer';
 import { pendingActivityRows } from '../../lib/tx-store';
@@ -185,16 +186,18 @@ export function TopNav({
                     {copiedFmt === 'litho' ? '✓' : <Copy size={14}/>}
                   </button>
                 </div>
-                <div className="addr-row" onClick={() => setAddrFmt('evm')}>
+                {/* The EVM address — secondary; litho1 stays the default
+                    (client 2026-10-15: "make litho1 first class"). */}
+                <div className="addr-row" onClick={() => setAddrFmt('evm')} title="EVM address">
                   <div className="addr-row-label">
-                    <span className="addr-row-tag">EVM 0x</span>
+                    <span className="addr-row-tag">EVM</span>
                     {addrFmt === 'evm' && <span className="addr-row-active">●</span>}
                   </div>
                   <div className="addr-row-value" title={evm}><Addr value={evm} head={6} tail={4}/></div>
                   <button
                     className="addr-row-copy"
                     onClick={e => { e.stopPropagation(); copyAddr('evm'); }}
-                    title="Copy 0x address"
+                    title="Copy EVM address"
                   >
                     {copiedFmt === 'evm' ? '✓' : <Copy size={14}/>}
                   </button>
@@ -203,7 +206,10 @@ export function TopNav({
                   <>
                     <div className="menu-divider"/>
                     {getVisibleAccountIndices().map((i) => {
-                      const a = accountAddresses[i];
+                      // In the format picked above — litho1 unless EVM is.
+                      const a = addrFmt === 'litho' && accountAddresses[i]
+                        ? displayAddress(accountAddresses[i], LITHO_MAINNET_CHAIN_ID)
+                        : accountAddresses[i];
                       // A wallet must always keep one account, so the last one
                       // can't be removed. Render the control DISABLED rather
                       // than hiding it — hiding made the feature look absent
@@ -228,7 +234,7 @@ export function TopNav({
                               <span>{getAccountName(i)}</span>
                               {a && (
                                 <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', fontWeight: 400 }}>
-                                  {a.slice(0, 6)}…{a.slice(-4)}
+                                  {a.startsWith('litho1') ? `${a.slice(0, 12)}…${a.slice(-6)}` : `${a.slice(0, 6)}…${a.slice(-4)}`}
                                 </span>
                               )}
                             </span>

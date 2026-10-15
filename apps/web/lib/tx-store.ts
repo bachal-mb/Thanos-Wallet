@@ -45,6 +45,10 @@ export interface PendingTx {
   id:         string;
   /** The tx hash, when `id` isn't it. */
   hash?:      string;
+  /** Lithosphere Mainnet: its own transaction hash (64 hex, no 0x), what
+   *  LithoScan shows first. The hash above stays the 0x EVM hash. From the
+   *  explorer, or looked up once for a send made here (saveNativeHash). */
+  nativeHash?: string;
   chain:      'bitcoin' | 'evm' | 'solana' | 'cosmos';
   /** EVM chain it went out on — what lets resolvePendingTxs check it. */
   chainId?:   number;
@@ -137,6 +141,18 @@ export function removeTx(id: string): void {
   saveAll(next);
 }
 
+/** Save a Lithosphere transaction's native hash onto every row with that 0x
+ *  EVM hash (a swap's legs share one), so it's looked up only once. */
+export function saveNativeHash(evmHash: string, nativeHash: string): void {
+  const key = evmHash.toLowerCase();
+  const all = loadPendingTxs();
+  let changed = false;
+  for (const t of all) {
+    if ((t.hash ?? t.id).toLowerCase() === key && t.nativeHash !== nativeHash) { t.nativeHash = nativeHash; changed = true; }
+  }
+  if (changed) saveAll(all);
+}
+
 /* ─── History read layer ────────────────────────────────────────────────
    The Activity feed is this store: every send recorded at broadcast, plus
    every transfer in and out on the networks the explorers cover
@@ -175,6 +191,8 @@ export interface LocalActivityItem {
   amount:        string;
   counterparty?: string;
   txHash:        string;
+  /** Lithosphere Mainnet's native hash, once known. */
+  nativeHash?:   string;
   ts?:           string;
   status:        'pending' | 'confirmed' | 'failed';
   /** Network name, when known — EVM sends no explorer has matched yet
@@ -207,6 +225,7 @@ export function pendingActivityRows(indexedHashes: Iterable<string>): LocalActiv
       amount:       t.amount,
       counterparty: t.recipient,
       txHash:       t.hash ?? t.id,
+      nativeHash:   t.nativeHash,
       ts:           new Date(t.broadcastAt).toISOString(),
       status:       t.status === 'broadcast' ? 'pending' as const : t.status === 'failed' ? 'failed' as const : 'confirmed' as const,
       network:      t.network ?? CHAIN_NETWORK[t.chain],
@@ -369,8 +388,9 @@ export async function historyAddresses(seed?: string[], privateKey?: string): Pr
 
 /** Fold explorer rows into the saved list: newest first, newest MAX_LOCAL
  *  kept. A row is saved once, under its own id; a send saved at broadcast
- *  (keyed by its hash) takes the row's verdict instead of being listed
- *  twice. `changed` is false when nothing that survives the cap moved. */
+ *  (keyed by its hash) takes the row's verdict — and, on Lithosphere, its
+ *  native hash — instead of being listed twice. `changed` is false when
+ *  nothing that survives the cap moved. */
 export function mergeHistoryRows(saved: PendingTx[], rows: HistoryRow[], now = Date.now()): { list: PendingTx[]; changed: boolean } {
   const list = saved.map(t => ({ ...t }));
   const byKey = new Map<string, PendingTx>();
@@ -389,10 +409,12 @@ export function mergeHistoryRows(saved: PendingTx[], rows: HistoryRow[], now = D
     if (hit) {
       if (hit.status === 'broadcast' && r.status !== 'pending') { hit.status = r.status; hit.updatedAt = now; changed = true; }
       if (!hit.network) { hit.network = r.networkName; changed = true; }
+      if (r.nativeHash && hit.nativeHash !== r.nativeHash) { hit.nativeHash = r.nativeHash; changed = true; }
       continue;
     }
     const tx: PendingTx = {
       id, hash: r.hash, chain: r.chain,
+      ...(r.nativeHash ? { nativeHash: r.nativeHash } : {}),
       ...(r.chainId != null ? { chainId: r.chainId } : {}),
       network: r.networkName, direction: r.direction,
       symbol: r.sym, recipient: r.counterparty ?? '', amount: r.amount,

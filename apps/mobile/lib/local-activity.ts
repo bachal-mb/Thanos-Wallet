@@ -50,6 +50,10 @@ export interface LocalActivityItem extends IndexerActivityItem {
   /** ERC-20 contract, for a token send. */
   tokenAddress?: string;
   memo?:         string;
+  /** Lithosphere's own hash of the transaction (64 hex, no 0x) — what
+   *  LithoScan shows first; `txHash` stays the 0x EVM hash the broadcast
+   *  returned. Looked up once the detail opens (lib/explorer-activity.ts). */
+  nativeHash?:   string;
 }
 
 /** What the send screen knows at broadcast time. */
@@ -158,6 +162,21 @@ export async function addLocalReceive(addr: string, rx: LocalReceiveInput): Prom
     await AsyncStorage.setItem(keyFor(addr), JSON.stringify([item, ...arr].slice(0, MAX)));
   } catch {
     /* storage full / disabled — non-fatal */
+  }
+}
+
+/** Put a Lithosphere send's native hash on its row (by its 0x hash), so it's
+ *  looked up once. Best-effort. */
+export async function setLocalNativeHash(addr: string, txHash: string, nativeHash: string): Promise<void> {
+  if (!addr || !txHash || !nativeHash) return;
+  const h = txHash.toLowerCase();
+  try {
+    const arr = await getLocalActivity(addr);
+    if (!arr.some((t) => t.txHash?.toLowerCase() === h && t.nativeHash !== nativeHash)) return;
+    const next = arr.map((t) => (t.txHash?.toLowerCase() === h ? { ...t, nativeHash } : t));
+    await AsyncStorage.setItem(keyFor(addr), JSON.stringify(next));
+  } catch {
+    /* storage full / disabled — looked up again next time */
   }
 }
 

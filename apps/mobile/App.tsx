@@ -135,9 +135,11 @@ initSentry();
 import { QrScannerModal } from './components/QrScannerModal';
 import { WalletConnectModal, WalletConnectRequestHost } from './components/WalletConnect';
 import { tokenIconSource, networkIconSource, chainBadgeSource, tokenIconPresentation } from './lib/token-icons';
-import { fetchChainHistory, historyEvmChainIds, type HistoryAddresses, type HistoryResult, type HistoryRow } from './lib/chain-history';
 import {
-  accumulateActivity, historyActivityItem, dropMatchedReceives, claimFullHistorySync, resetFullHistorySync,
+  fetchChainHistory, historyEvmChainIds, lithoscanTxUrl, type HistoryAddresses, type HistoryResult, type HistoryRow,
+} from './lib/chain-history';
+import {
+  accumulateActivity, historyActivityItem, dropMatchedReceives, claimFullHistorySync, resetFullHistorySync, lookupNativeHash,
 } from './lib/explorer-activity';
 import {
   formatFiat, initDisplayCurrency, applyDisplayCurrency, persistDisplayCurrency,
@@ -161,7 +163,7 @@ import {
   type MultXBridgeOption, type MultXBridgeStep, type MultXBridgeTransfer,
 } from './lib/multx-thanos/service';
 import { MULTX_CONFIG, thanosBridge, multxChain, multxSigner, multxPrivateKey } from './lib/thanos-bridge';
-import { resolveRecipient, evmToLitho } from './lib/address';
+import { resolveRecipient, evmToLitho, lithoToEvm } from './lib/address';
 import { checkDnnsAvailability, registerDnnsName, reverseLookupDnns, type Availability } from './lib/dnns';
 import { apiClient, type AuthUser } from './lib/auth-client';
 import { sendAsset, executeWcRequest, WcSignerError, rpcProxy } from './lib/wc-signer';
@@ -879,8 +881,29 @@ function isValidRecipient(v: string): boolean {
 }
 
 /** An Activity row: a feed item, plus what this device recorded when it
- *  sent it (network, sender, token contract, memo). */
-type ActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain' | 'networkName' | 'fromAddress' | 'tokenAddress' | 'memo'>>;
+ *  sent it (network, sender, token contract, memo) and a Lithosphere
+ *  transaction's native hash. */
+type ActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain' | 'networkName' | 'fromAddress' | 'tokenAddress' | 'memo' | 'nativeHash'>>;
+
+/** Lithosphere Mainnet shows its addresses as litho1… and its transactions by
+ *  their native hash, as LithoScan does — the 0x forms are secondary (client
+ *  2026-10-15: "make litho1 first class"). Every other network keeps 0x. */
+const LITHO_CHAIN_ID = 9005;
+
+/** An address as it's shown on `chainId`: on Lithosphere a 0x address in its
+ *  litho1… form. Display only — what's stored and signed stays 0x. Anything
+ *  else (another network, a litho1… or a name.litho) as it is. */
+function displayAddr(addr: string, chainId?: number): string {
+  if (chainId !== LITHO_CHAIN_ID || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
+  try { return evmToLitho(addr); } catch { return addr; }
+}
+
+/** A short address for a one-line row: the prefix plus a few characters each
+ *  end ("0x2c2b…72e4", "litho1qz3…72e4"). */
+function shortRowAddr(addr: string): string {
+  const head = addr.startsWith('litho1') ? 9 : 6;
+  return addr.length > head + 6 ? `${addr.slice(0, head)}…${addr.slice(-4)}` : addr;
+}
 
 interface ActivityState {
   items: ActivityItem[]; loading: boolean; offline: boolean;
@@ -1040,11 +1063,14 @@ function useActivity(address: string, seed?: string[]): ActivityState {
     // A send the explorer also reports keeps what was recorded at send time
     // (network, sender, token, memo); the explorer's status and fields win,
     // unless the explorer still says pending and this device has settled it.
-    // Only on its own leg — a swap's legs share one hash.
+    // Lithosphere's native hash comes from whichever has it (LithoScan's row,
+    // or a lookup saved on the send). Only on its own leg — a swap's legs
+    // share one hash.
     const enriched = items.map((x) => {
       const l = x.txHash ? byHash.get(x.txHash.toLowerCase()) : undefined;
       if (!l || l.type !== x.type) return x;
-      return { ...l, ...x, status: x.status === 'pending' ? l.status : x.status };
+      const nativeHash = x.nativeHash ?? l.nativeHash;
+      return { ...l, ...x, status: x.status === 'pending' ? l.status : x.status, ...(nativeHash ? { nativeHash } : {}) };
     });
     const feedHashes = new Set(items.flatMap((x) => (x.txHash ? [x.txHash.toLowerCase()] : [])));
     const feedIds = new Set(items.map((x) => x.id));
@@ -3949,8 +3975,10 @@ function sendNetworkName(chainId?: number, registryName?: string): string {
 /** Chain-appropriate tx-explorer URL — mirrors the web Send modal's routing.
  *  URLs duplicate lib/{bitcoin,solana,cosmos}.ts constants on purpose: those
  *  modules are lazy-loaded (heavy chain SDKs), and importing them here just
- *  for a URL would drag them into the eager bundle. */
-function txExplorerUrl(chain: SendChainOption, hash: string, extExplorerBase?: string): string | null {
+ *  for a URL would drag them into the eager bundle. LithoScan's pages are
+ *  /txs/<hash> (the native hash or the 0x one), not /tx/. */
+function txExplorerUrl(chain: SendChainOption, hash: string, extExplorerBase?: string, chainId?: number): string | null {
+  if (chainId === LITHO_CHAIN_ID) return lithoscanTxUrl(hash);
   if (extExplorerBase) return `${extExplorerBase.replace(/\/+$/, '')}/tx/${hash}`;
   switch (chain) {
     case 'bitcoin': return `https://mempool.space/tx/${hash}`;
@@ -4115,7 +4143,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
   const [simReport, setSimReport] = useState<import('./lib/tx-simulator').SimulationReport | null>(null);
   // Send-success modal state (replaces the OS white Alert — mirrors the web
   // Send modal's success stage: ✓ icon, hash → explorer link, Done).
-  const [sentInfo, setSentInfo] = useState<{ hash: string; sym: string; amount: string; network: string; explorerUrl: string | null } | null>(null);
+  const [sentInfo, setSentInfo] = useState<{ hash: string; sym: string; amount: string; network: string; explorerUrl: string | null; chainId?: number } | null>(null);
 
   // The EVM pill covers every EVM network (Lithosphere Mainnet, the external
   // chains, custom networks) — but ONLY EVM
@@ -4172,6 +4200,14 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
   const overBalance = !!fromBal && amtNum > fromBal.balance;
   const reviewSym = chain === 'evm' && coin ? coin.sym : CHAIN_META[chain].sym;
   const reviewNetwork = chain === 'evm' ? sendNetworkName(coin?.chainId, evmNet?.name) : CHAIN_META[chain].label;
+  // The recipient's 0x form for the checks before sending, typed as 0x or
+  // litho1… (a name.litho resolves only at send) — litho1 is checked too.
+  const toEvm = useMemo(() => {
+    const s = to.trim();
+    if (/^0x[0-9a-fA-F]{40}$/.test(s)) return s;
+    if (!/^litho1[0-9a-z]{6,}$/.test(s)) return '';
+    try { return lithoToEvm(s); } catch { return ''; }
+  }, [to]);
 
   // Chain-specific recipient validation. The EVM path also accepts
   // litho1… and name.litho — handled inside isValidRecipient.
@@ -4191,10 +4227,10 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
      Solana have their own checks elsewhere. */
   useEffect(() => {
     // Simulated on the asset's own chain — the one the send is signed on.
-    // Only a plain 0x recipient: the simulator can't resolve litho1 / .litho.
-    if (chain !== 'evm' || !coin || !evmNet || !/^0x[0-9a-fA-F]{40}$/.test(to.trim())
+    // A 0x or litho1 recipient (toEvm): the simulator can't resolve .litho.
+    if (chain !== 'evm' || !coin || !evmNet || !toEvm
         || (amtNum <= 0 && hexBytes === 0) || !hexOk || overBalance) { setSimReport(null); return; }
-    const toAddr = to.trim();
+    const toAddr = toEvm;
     const fromAddr = addr;
     const amount = shownAmt;
     const simChain = evmNet.chainId;
@@ -4219,7 +4255,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
       } catch { if (!cancelled) setSimReport(null); }
     }, 450);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [coin, evmNet, to, amt, amtNum, overBalance, addr, hexInput, hexBytes, hexOk]);
+  }, [coin, evmNet, toEvm, amt, amtNum, overBalance, addr, hexInput, hexBytes, hexOk]);
 
   const doSend = async () => {
     if (sending) return;
@@ -4292,7 +4328,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
           } catch { /* best-effort */ }
         })();
       }
-      setSentInfo({ hash, sym, amount: shownAmt, network, explorerUrl: txExplorerUrl(chain, hash, net?.explorerUrl) });
+      setSentInfo({ hash, sym, amount: shownAmt, network, explorerUrl: txExplorerUrl(chain, hash, net?.explorerUrl, net?.chainId), chainId: net?.chainId });
     } catch (e) {
       setSending(false);
       Alert.alert('Send failed', humanSendError(e));
@@ -4466,24 +4502,26 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
             Not a valid {CHAIN_META[chain].label} address
           </Text>
         )}
-        {chain === 'evm' && /^0x[0-9a-fA-F]{40}$/.test(to.trim()) && !!checkRecipient(to.trim()) && (
+        {chain === 'evm' && !!toEvm && !!checkRecipient(toEvm) && (
           <Text accessibilityRole="alert" style={[styles.rowSub, { marginTop: 8, color: C.red, fontWeight: '700' }]}>
-            {checkRecipient(to.trim())}
+            {checkRecipient(toEvm)}
           </Text>
         )}
 
         {/* Own accounts — one-tap transfer between the user's wallets. EVM
             addresses are shared across every EVM network (Lithosphere,
-            Ethereum, BNB…), so this works for any EVM-chain asset. */}
+            Ethereum, BNB…), so this works for any EVM-chain asset. On
+            Lithosphere they're shown and filled in as litho1…. */}
         {chain === 'evm' && otherAccounts.length > 0 && (
           <View style={{ marginTop: 14 }}>
             <Text style={[styles.fieldLabel, { marginBottom: 4 }]}>MY ACCOUNTS</Text>
             {otherAccounts.map((a, i) => {
-              const sel = to.trim().toLowerCase() === a.address.toLowerCase();
+              const sel = toEvm.toLowerCase() === a.address.toLowerCase();
+              const shown = displayAddr(a.address, coinChainId);
               return (
                 <Pressable
                   key={a.idx}
-                  onPress={() => setTo(a.address)}
+                  onPress={() => setTo(shown)}
                   style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth, borderTopColor: C.borderSubtle }, pressed && { opacity: 0.6 }]}
                   accessibilityLabel={`Send to ${a.name}`}
                 >
@@ -4492,7 +4530,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: C.textPrimary, fontSize: 15, fontWeight: '600' }}>{a.name}</Text>
-                    <Text style={{ color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 2 }}>{a.address.slice(0, 8)}…{a.address.slice(-6)}</Text>
+                    <Text style={{ color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 2 }}>{shown.slice(0, shown.startsWith('litho1') ? 12 : 8)}…{shown.slice(-6)}</Text>
                   </View>
                   {sel && <Check size={18} color={C.blue}/>}
                 </Pressable>
@@ -4619,6 +4657,9 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
                   {sentInfo.amount} {sentInfo.sym} broadcast on {sentInfo.network}.
                 </Text>
                 <Pressable disabled={!sentInfo.explorerUrl} onPress={() => { if (sentInfo.explorerUrl) Linking.openURL(sentInfo.explorerUrl).catch(() => {}); }} hitSlop={6} style={{ alignItems: 'center', marginBottom: 18 }}>
+                  {/* Lithosphere's own hash isn't known until LithoScan
+                      indexes the send (its Activity detail shows it then). */}
+                  {sentInfo.chainId === LITHO_CHAIN_ID && <Text style={{ color: C.textMuted, fontSize: 11, marginBottom: 2 }}>EVM hash</Text>}
                   <Text style={{ color: C.blue, fontSize: 11, fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) }}>
                     {sentInfo.hash.slice(0, 14)}…{sentInfo.hash.slice(-10)}
                   </Text>
@@ -4643,7 +4684,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
               Send {shownAmt} {reviewSym}
             </Text>
             <Text style={{ color: C.textSecondary, fontSize: 15, lineHeight: 22, marginTop: 4 }}>
-              To: {to}
+              To: {chain === 'evm' ? displayAddr(to.trim(), coinChainId) : to}
             </Text>
             {hexBytes > 0 && (
               <Text style={{ color: C.textSecondary, fontSize: 15, lineHeight: 22, marginTop: 2 }}>
@@ -5018,7 +5059,8 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
         )}
 
         {/* Litho1 / EVM toggle — same wallet, two address formats; litho1
-            decodes to the same 0x address. */}
+            decodes to the same 0x address. litho1 is the default; the 0x
+            form is the secondary option. */}
         {isLitho && !!lithoAddr && (
           <View style={{
             flexDirection: 'row', alignSelf: 'center',
@@ -5027,8 +5069,8 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
             borderRadius: 999, padding: 3, marginTop: 12,
           }}>
             {[
-              { isAlt: false, label: 'Litho1' },
-              { isAlt: true,  label: 'EVM'    },
+              { isAlt: false, label: 'Litho1'      },
+              { isAlt: true,  label: 'EVM address' },
             ].map(o => {
               const selected = o.isAlt === showAlt;
               return (
@@ -5072,7 +5114,7 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
         </View>
 
         <Pressable onPress={copy} style={styles.addrCard}>
-          <Text style={styles.fieldLabel}>YOUR ADDRESS · TAP TO COPY</Text>
+          <Text style={styles.fieldLabel}>{isLitho && showAlt ? 'EVM ADDRESS' : 'YOUR ADDRESS'} · TAP TO COPY</Text>
           <HiAddr value={displayed || '—'} full style={styles.addrTextLarge}/>
         </Pressable>
 
@@ -5120,11 +5162,28 @@ function TxSheetRow({ C, label, children }: { C: ReturnType<typeof useColors>; l
   );
 }
 
-/** A full address in the detail sheet — wraps rather than truncates, with copy. */
-function TxAddressRow({ C, label, value, copied, onCopy }: {
-  C: ReturnType<typeof useColors>; label: string; value: string; copied: boolean; onCopy: () => void;
+/** A full address in the detail sheet — wraps rather than truncates, with copy.
+ *  `secondary`: a smaller, muted line under the one it qualifies (a
+ *  Lithosphere transaction's EVM hash). */
+function TxAddressRow({ C, label, value, copied, onCopy, secondary = false }: {
+  C: ReturnType<typeof useColors>; label: string; value: string; copied: boolean; onCopy: () => void; secondary?: boolean;
 }) {
   const mono = Platform.select({ ios: 'Menlo', android: 'monospace' }) as string;
+  if (secondary) {
+    return (
+      <View style={{ paddingTop: 0, paddingBottom: 12, gap: 4 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ color: C.textMuted, fontSize: 11.5 }}>{label}</Text>
+          <Pressable onPress={onCopy} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Copy ${label.toLowerCase()}`}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            {copied ? <Check size={12} color={C.green}/> : <Copy size={12} color={C.textMuted}/>}
+            <Text style={{ color: copied ? C.green : C.textMuted, fontSize: 11, fontWeight: '600' }}>{copied ? 'Copied' : 'Copy'}</Text>
+          </Pressable>
+        </View>
+        <Text selectable style={{ color: C.textMuted, fontSize: 11, fontFamily: mono, lineHeight: 16 }}>{value}</Text>
+      </View>
+    );
+  }
   return (
     <View style={{ paddingVertical: 12, gap: 6 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -5171,6 +5230,21 @@ function TxDetailSheet({ item, onClose }: { item: ActivityItem; onClose: () => v
     return () => { cancel = true; };
   }, [item.txHash, item.chainId, nonEvm]);
 
+  // Lithosphere goes by its native hash, as LithoScan shows it. A row that
+  // knows only the 0x hash (a send made here, a row saved before rows carried
+  // it) has it looked up now and saved on the row, so it's looked up once.
+  const litho = item.chainId === LITHO_CHAIN_ID;
+  const [nativeHash, setNativeHash] = useState<string | undefined>(item.nativeHash);
+  useEffect(() => {
+    setNativeHash(item.nativeHash);
+    if (!litho || item.nativeHash || !item.txHash) return;
+    let cancel = false;
+    lookupNativeHash(me, item.txHash)
+      .then((h) => { if (!cancel && h) setNativeHash(h); })
+      .catch(() => {});
+    return () => { cancel = true; };
+  }, [litho, item.txHash, item.nativeHash, me]);
+
   // A custom network's explorer lives in the chain registry (lazy-loaded).
   const [extExplorer, setExtExplorer] = useState<string | undefined>();
   useEffect(() => {
@@ -5196,13 +5270,17 @@ function TxDetailSheet({ item, onClose }: { item: ActivityItem; onClose: () => v
 
   const transfer = det?.tokenTransfer ?? null;
   const counterparty = item.counterparty ?? (d.positive ? det?.from : (transfer?.recipient ?? det?.to)) ?? null;
-  const fromAddr = d.positive ? counterparty : (item.fromAddress ?? det?.from ?? (nonEvm ? null : me || null));
-  const toAddr = d.positive ? (nonEvm ? null : me || null) : counterparty;
+  // Shown — and copied — as litho1… on Lithosphere (displayAddr).
+  const shownAddr = (a: string | null | undefined) => (a ? displayAddr(a, item.chainId) : null);
+  const fromAddr = shownAddr(d.positive ? counterparty : (item.fromAddress ?? det?.from ?? (nonEvm ? null : me || null)));
+  const toAddr = shownAddr(d.positive ? (nonEvm ? null : me || null) : counterparty);
   const tokenContract = item.tokenAddress ?? transfer?.contract ?? null;
   const network = item.networkName ?? det?.networkName
     ?? (item.chainId != null ? sendNetworkName(item.chainId) : nonEvm ? CHAIN_META[item.chain as SendChainOption].label : null);
-  const explorer = det?.explorerTxUrl
-    ?? (item.txHash ? txExplorerUrl((item.chain ?? 'evm') as SendChainOption, item.txHash, extExplorer) : null);
+  const explorer = litho && item.txHash
+    ? lithoscanTxUrl(nativeHash || item.txHash)
+    : det?.explorerTxUrl
+      ?? (item.txHash ? txExplorerUrl((item.chain ?? 'evm') as SendChainOption, item.txHash, extExplorer, item.chainId) : null);
 
   const feeText = det?.feeNative != null
     ? `${det.feeNative.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${det.nativeSymbol}`
@@ -5270,7 +5348,16 @@ function TxDetailSheet({ item, onClose }: { item: ActivityItem; onClose: () => v
                     <TxSheetRow C={C} label="Block"><Text style={valueText}>{blockText}</Text></TxSheetRow>
                   </>
                 ) : null}
-                <TxAddressRow C={C} label="Transaction hash" value={item.txHash} copied={copied === 'hash'} onCopy={() => copy('hash', item.txHash!)}/>
+                {/* Lithosphere: its native hash first, the 0x one under it —
+                    or alone, labelled as such, until the native one is known. */}
+                {litho && nativeHash ? (
+                  <>
+                    <TxAddressRow C={C} label="Transaction hash" value={nativeHash} copied={copied === 'hash'} onCopy={() => copy('hash', nativeHash)}/>
+                    <TxAddressRow C={C} secondary label="EVM hash" value={item.txHash} copied={copied === 'evmHash'} onCopy={() => copy('evmHash', item.txHash!)}/>
+                  </>
+                ) : (
+                  <TxAddressRow C={C} label={litho ? 'EVM hash' : 'Transaction hash'} value={item.txHash} copied={copied === 'hash'} onCopy={() => copy('hash', item.txHash!)}/>
+                )}
               </View>
             )}
 
@@ -5354,12 +5441,14 @@ function ActivityScreen() {
           const amount = activityAmount(t.amount);
           // Specifics line: network + direction + counterparty + when.
           // "Base · To 0x2c2b…72e4 · 3 min ago" / "From litho1…" — falls back
-          // gracefully when the feed doesn't send a counterparty.
-          const cp = (t.counterparty ?? '').trim();
-          const cpShort = cp.length > 12 ? `${cp.slice(0, 6)}…${cp.slice(-4)}` : cp;
-          const cpLine = cp ? `${d.label === 'Received' ? 'From' : 'To'} ${cpShort}` : '';
+          // gracefully when the feed doesn't send a counterparty. Lithosphere
+          // rows show litho1… (displayAddr).
+          const cp = displayAddr((t.counterparty ?? '').trim(), t.chainId);
+          const cpLine = cp ? `${d.label === 'Received' ? 'From' : 'To'} ${shortRowAddr(cp)}` : '';
           const when = relativeTime(t.ts) || (t.status ?? '');
           const failed = t.status === 'failed';
+          // Lithosphere rows by their native hash only — no 0x snippet.
+          const hashSnip = t.chainId === LITHO_CHAIN_ID ? t.nativeHash : t.txHash;
           return (
             <Pressable key={t.id || `${i}`} onPress={() => setDetail(t)} accessibilityRole="button" accessibilityHint="Shows the transaction details" style={[styles.row, i < shown.length - 1 && styles.rowBorder]}>
               <View style={[styles.txIcon, { backgroundColor: d.positive ? C.greenDim : C.blueDim }]}>
@@ -5378,8 +5467,8 @@ function ActivityScreen() {
                 <Text style={[styles.rowAmt, { color: failed ? C.textMuted : d.positive ? C.green : C.textPrimary }]}>
                   {d.positive ? '+' : ''}{amount} {t.symbol}
                 </Text>
-                {t.txHash ? (
-                  <Text style={styles.rowBal}>{t.txHash.slice(0, 10)}…</Text>
+                {hashSnip ? (
+                  <Text style={styles.rowBal}>{hashSnip.slice(0, 10)}…</Text>
                 ) : null}
               </View>
             </Pressable>
@@ -5747,7 +5836,7 @@ function BridgeScreen({ goBack }: { goBack: () => void }) {
 
           {option && from && to && (
             <Text style={{ color: C.textMuted, fontSize: 11, lineHeight: 16, marginTop: 2 }}>
-              Arrives at your address on {to.name}{address ? ` (${address.slice(0, 6)}…${address.slice(-4)})` : ''}. The network fee is paid in {from.nativeSymbol} on {from.name}{base ? '; the first transfer of a token also needs an approval' : ''}.
+              Arrives at your address on {to.name}{address ? ` (${shortRowAddr(displayAddr(address, dst ?? undefined))})` : ''}. The network fee is paid in {from.nativeSymbol} on {from.name}{base ? '; the first transfer of a token also needs an approval' : ''}.
             </Text>
           )}
 

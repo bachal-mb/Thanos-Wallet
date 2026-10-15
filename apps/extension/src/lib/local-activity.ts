@@ -38,6 +38,11 @@ export interface LocalTx {
   tokenAddress?: string;
   /** Absent on rows saved before this field existed = pending. */
   status?:       'pending' | 'confirmed' | 'failed';
+  /** Lithosphere's own transaction hash (64 hex, no 0x) — what LithoScan
+   *  shows first. `hash` stays the 0x EVM hash: it's what a send is recorded
+   *  and settled by. From the explorer row, or looked up once when a send's
+   *  detail opens (setLocalNativeHash). */
+  nativeHash?:   string;
 }
 
 const keyFor = (addr: string) => `thanos-local-activity:${(addr || '').toLowerCase()}`;
@@ -93,9 +98,10 @@ const amountOf = (s: string) => parseFloat(String(s).replace(/[^0-9.]/g, '')) ||
 /** Save rows the explorers reported (lib/explorer-activity.ts — one row per
  *  transfer, each with an id). The same transfer saved before — a send made
  *  here, or a row from before rows had ids — is matched by hash and direction
- *  and takes the explorer's verdict instead of being added twice. A receive
- *  noticed from a balance increase (no hash) gives way to the explorer's row
- *  for it. Anything else is new (older history, or another device's send).
+ *  and takes the explorer's verdict (and, on Lithosphere, the native hash)
+ *  instead of being added twice. A receive noticed from a balance increase
+ *  (no hash) gives way to the explorer's row for it. Anything else is new
+ *  (older history, or another device's send).
  *  Returns true when something changed. */
 export function mergeExplorerRows(addr: string, rows: LocalTx[]): boolean {
   if (!addr || rows.length === 0) return false;
@@ -110,6 +116,7 @@ export function mergeExplorerRows(addr: string, rows: LocalTx[]): boolean {
       if (!hit.id && r.id) { byId.delete(rowId(hit).toLowerCase()); hit.id = r.id; byId.set(id, hit); changed = true; }
       if (r.status && r.status !== 'pending' && hit.status !== r.status) { hit.status = r.status; changed = true; }
       if (hit.chainId == null && r.chainId != null) { hit.chainId = r.chainId; hit.networkName = r.networkName; changed = true; }
+      if (r.nativeHash && hit.nativeHash !== r.nativeHash) { hit.nativeHash = r.nativeHash; changed = true; }
       continue;
     }
     if (r.label === 'Received') {
@@ -126,6 +133,26 @@ export function mergeExplorerRows(addr: string, rows: LocalTx[]): boolean {
   }
   if (changed) write(addr, arr);
   return changed;
+}
+
+/** The saved native hash of a Lithosphere transaction known by its 0x hash. */
+export function getLocalNativeHash(addr: string, evmHash: string): string | undefined {
+  if (!addr || !evmHash) return undefined;
+  const h = evmHash.toLowerCase();
+  return read(addr).find((t) => !!t.nativeHash && !!t.hash && t.hash.toLowerCase() === h)?.nativeHash;
+}
+
+/** Save a Lithosphere transaction's native hash (from LithoScan) onto every
+ *  row with its 0x hash, so it's looked up only once. */
+export function setLocalNativeHash(addr: string, evmHash: string, nativeHash: string): void {
+  if (!addr || !evmHash || !nativeHash) return;
+  const h = evmHash.toLowerCase();
+  const arr = read(addr);
+  let changed = false;
+  for (const t of arr) {
+    if (t.hash && t.hash.toLowerCase() === h && t.nativeHash !== nativeHash) { t.nativeHash = nativeHash; changed = true; }
+  }
+  if (changed) write(addr, arr);
 }
 
 /* ─── Settling pending sends on their own chain ─────────────────────── */

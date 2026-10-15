@@ -62,6 +62,9 @@ export interface IndexerActivityItem {
    *  its name when known, else the EVM chain id. */
   network?:  string;
   chainId?:  number;
+  /** Lithosphere Mainnet: the native hash (64 hex, no 0x) LithoScan shows
+   *  first; `txHash` is the 0x EVM hash. */
+  nativeHash?: string;
 }
 
 /* ─── Low-level fetch with timeout + 5xx-as-offline ─────────────────── */

@@ -38,8 +38,10 @@ const TX_CHAINS: readonly TxChain[] = [
 
 const chainById = (id: number): TxChain | undefined => TX_CHAINS.find((c) => c.chainId === id);
 
-/* EVM explorers use /tx/<hash>. Mirrors sdk-core tx-details. */
-const explorerTx = (c: TxChain, hash: string): string => `${c.explorer}/tx/${hash}`;
+/* EVM explorers use /tx/<hash>; LithoScan's pages are /txs/<hash>. Mirrors
+ * sdk-core tx-details. */
+const explorerTx = (c: TxChain, hash: string): string =>
+  `${c.explorer}/${c.chainId === 9005 ? 'txs' : 'tx'}/${hash}`;
 
 export interface OnchainTxDetails {
   chainId:       number;

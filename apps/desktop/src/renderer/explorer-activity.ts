@@ -32,6 +32,8 @@ function toLocal(r: HistoryRow): LocalTx {
     ...(r.chainId != null ? { chainId: r.chainId } : {}),
     ...(r.counterparty ? { counterparty: r.counterparty } : {}),
     ...(r.tokenAddress ? { tokenAddress: r.tokenAddress } : {}),
+    // Lithosphere: LithoScan's own hash, shown before the 0x one.
+    ...(r.nativeHash ? { nativeHash: r.nativeHash } : {}),
   };
 }
 

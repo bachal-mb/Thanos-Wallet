@@ -30,6 +30,7 @@ import {
 } from '../lib/address-book';
 import { historyAddresses, loadPendingTxs, pendingActivityRows, resolvePendingTxs, syncExplorerHistory, type PendingTx } from '../lib/tx-store';
 import { BumpFeeModal } from './BumpFeeModal';
+import { displayAddress } from '../lib/address';
 import { bitcoinExplorerUrl } from '../lib/bitcoin';
 import { BookUser, Plus, Trash2, ArrowUpRight, Zap } from 'lucide-react';
 import { TokenDetailModal } from './TokenDetailModal';
@@ -574,7 +575,8 @@ export function TransactionsView() {
                       {tx.direction === 'in' ? 'Receive' : 'Send'} {tx.amount} {tx.symbol}{tx.network ? ` · ${tx.network}` : ''}
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {tx.direction === 'in' ? '←' : '→'} {tx.recipient}
+                      {/* litho1… on Lithosphere — the store keeps what was sent to. */}
+                      {tx.direction === 'in' ? '←' : '→'} {displayAddress(tx.recipient, tx.chainId)}
                     </div>
                     {tx.btc && (
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>

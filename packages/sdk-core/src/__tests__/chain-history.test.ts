@@ -66,6 +66,32 @@ describe.each([['sdk-core', core], ['mobile twin', mobile]])('%s fetchChainHisto
     expect(seen.some((u) => u.includes('blockscout'))).toBe(false);     // 'lithosphere' reads nothing else
   });
 
+  it('gives Lithosphere rows their native hash and litho1 counterparty, as LithoScan shows them', async () => {
+    const NATIVE = '8A629CB5DE9BC3A5FDF9E4F93A3613E7A60F29A49B5DFA4C90208BECEB872632';
+    const { rows } = await m.fetchChainHistory({ evm: ME }, {
+      sources: 'lithosphere',
+      fetchImpl: fakeFetch([['txs?limit=100&offset=0', { hasMore: false, items: [
+        { hash: NATIVE, evmHash: '0xa1', fromAddr: 'litho1them', toAddr: 'litho1me', evmFromAddr: OTHER, evmToAddr: ME, value: '1', inputData: '0x', timestamp: '2026-10-15T11:14:00Z' },
+        { evmHash: '0xa2', evmFromAddr: ME, evmToAddr: OTHER, value: '1', inputData: '0x', timestamp: '2026-10-15T10:00:00Z' },
+      ] }]]),
+    });
+    expect(rows[0]).toMatchObject({ hash: '0xa1', nativeHash: NATIVE, counterparty: 'litho1them' });
+    expect(rows[1].nativeHash).toBeUndefined();          // older rows without one
+    expect(rows[1].counterparty).toBe(OTHER);             // falls back to 0x
+  });
+
+  it('looks up a native hash by its 0x hash and builds LithoScan links', async () => {
+    const evm = '0x178d40b689a78647e0e4f95609cbc3130da03d1d5ba0377a73794c3492897d5d';
+    const seen: string[] = [];
+    const fetchImpl = fakeFetch([['/api/txs/' + evm, { hash: '8a629cb5de9bc3a5fdf9e4f93a3613e7a60f29a49b5dfa4c90208beceb872632', evmHash: evm }]], seen);
+    expect(await m.fetchLithoNativeHash(evm, { fetchImpl })).toBe('8A629CB5DE9BC3A5FDF9E4F93A3613E7A60F29A49B5DFA4C90208BECEB872632');
+    expect(await m.fetchLithoNativeHash('0x1234', { fetchImpl })).toBeNull();          // not a tx hash: no request
+    expect(await m.fetchLithoNativeHash('0x' + 'b'.repeat(64), { fetchImpl })).toBeNull(); // not indexed
+    expect(seen.length).toBe(2);
+    expect(m.lithoscanTxUrl('ABC')).toBe('https://lithoscan.ai/txs/ABC');
+    expect(m.lithoscanAddressUrl('litho1x')).toBe('https://lithoscan.ai/address/litho1x');
+  });
+
   it('keeps known and priced tokens from Blockscout and drops spam and fakes', async () => {
     const tok = (address: string, symbol: string, extra: Record<string, unknown> = {}) => ({ address_hash: address, symbol, decimals: '6', ...extra });
     const transfer = (hash: string, token: unknown, from = OTHER, to = ME, value = '2500000') =>

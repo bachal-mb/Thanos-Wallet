@@ -59,6 +59,10 @@ export interface HistoryRow {
   ts:            number;
   status:        'pending' | 'confirmed' | 'failed';
   blockNumber?:  number;
+  /** Lithosphere's own transaction hash (64 hex, no 0x) — what LithoScan
+   *  shows first. `hash` stays the 0x EVM hash, so a send recorded on this
+   *  device still matches its explorer row. */
+  nativeHash?:   string;
 }
 
 export interface HistoryOptions {
@@ -86,6 +90,38 @@ export interface HistoryResult {
 }
 
 const LITHOSCAN = 'https://lithoscan.ai/api';
+/** LithoScan pages. Lithosphere addresses are litho1… first and its
+ *  transactions go by their native hash; the 0x forms are secondary there
+ *  (client 2026-10-15: "make litho1 first class"). */
+export const LITHOSCAN_URL = 'https://lithoscan.ai';
+/** Works with the native hash or the 0x EVM hash. */
+export const lithoscanTxUrl = (hash: string): string => `${LITHOSCAN_URL}/txs/${hash}`;
+export const lithoscanAddressUrl = (address: string): string => `${LITHOSCAN_URL}/address/${address}`;
+
+const NATIVE_HASH = /^[0-9A-Fa-f]{64}$/;
+
+/** The native hash of a Lithosphere transaction known by its 0x EVM hash (a
+ *  send made on this device), from LithoScan — null when it isn't indexed
+ *  yet or LithoScan can't be reached. */
+export async function fetchLithoNativeHash(
+  evmHash: string,
+  opts: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<string | null> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(evmHash)) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 10_000);
+  try {
+    const get = opts.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+    const res = await get(`${LITHOSCAN}/txs/${evmHash}`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { hash?: unknown } | null;
+    return typeof json?.hash === 'string' && NATIVE_HASH.test(json.hash) ? json.hash.toUpperCase() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const MEMPOOL = 'https://mempool.space/api';
 const SOLANA_RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
 const COSMOS_REST = 'https://cosmos-rest.publicnode.com';
@@ -225,10 +261,14 @@ async function lithoscan(ctx: Ctx, addr: string): Promise<HistoryRow[]> {
         id: `${hash}:9005:native:${direction}`,
         hash, chain: 'evm', chainId: 9005, networkName: 'Lithosphere', sym: 'LITHO',
         direction, amount: formatBaseUnits(wei, 18),
-        counterparty: direction === 'out' ? t.evmToAddr : t.evmFromAddr,
+        // litho1… first, as LithoScan shows it.
+        counterparty: direction === 'out'
+          ? (t.toAddr || t.cosmosToAddr || t.evmToAddr)
+          : (t.fromAddr || t.cosmosFromAddr || t.evmFromAddr),
         ts: msOf(t.timestamp),
         status: t.success === false ? 'failed' : 'confirmed',
         blockNumber: typeof t.blockHeight === 'number' ? t.blockHeight : undefined,
+        ...(typeof t.hash === 'string' && NATIVE_HASH.test(t.hash) ? { nativeHash: t.hash.toUpperCase() } : {}),
       });
     }
     if (!json?.hasMore || items.length === 0) break;

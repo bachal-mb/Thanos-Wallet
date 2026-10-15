@@ -50,6 +50,7 @@ import {
   subscribeFx, FX_CURRENCIES, type DisplayCurrency,
   convertFromUsd, withCurrencyAffix,
   fetchOnchainTxDetails, type OnchainTxDetails,
+  fetchLithoNativeHash, lithoscanTxUrl,
 } from '@thanos/sdk-core';
 import { HardwareModal } from './hardware';
 import { WalletConnectModal } from './walletconnect';
@@ -221,6 +222,21 @@ function HiAddr({ value, head = 6, tail = 6, full = false }: {
       <span style={{ color: 'var(--green, #10b981)', fontWeight: 600 }}>{t}</span>
     </span>
   );
+}
+
+/** Lithosphere Mainnet goes by litho1… addresses and its native transaction
+ *  hash, as LithoScan shows them; 0x is the secondary "EVM" form there
+ *  (client 2026-10-15: "make litho1 first class"). Display only — what's
+ *  stored, signed and sent stays 0x. Every other network keeps 0x. */
+const LITHO_MAINNET = 9005;
+function lithoDisplayAddr(a: string, chainId: number | undefined): string {
+  if (chainId !== LITHO_MAINNET || !/^0x[0-9a-fA-F]{40}$/.test(a)) return a;
+  try { return evmToLitho(a); } catch { return a; }
+}
+/** 0x123456…abcdef — litho1 keeps as many characters past its prefix. */
+function shortAddress(a: string): string {
+  const head = a.startsWith('litho1') ? 12 : 8;
+  return a.length > head + 9 ? `${a.slice(0, head)}…${a.slice(-6)}` : a;
 }
 
 /* ──────────────────────── Account ──────────────────────── */
@@ -2895,7 +2911,24 @@ function fmtTxDateTime(ts?: string): string {
 }
 function shortTxAddr(a?: string | null): string {
   if (!a) return '—';
-  return a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
+  // litho1 + 4 characters, like 0x + 4 — the prefix alone tells nothing apart.
+  const head = a.startsWith('litho1') ? 10 : 6;
+  return a.length > 14 ? `${a.slice(0, head)}…${a.slice(-4)}` : a;
+}
+/** A transaction hash, shortened, that copies in full on click — the form
+ *  shown is the form copied. `secondary`: Lithosphere's smaller EVM-hash line. */
+function TxHashCopy({ hash, secondary = false }: { hash: string; secondary?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { void copyText(hash); setCopied(true); setTimeout(() => setCopied(false), 1500); };
+  return (
+    <button type="button" onClick={copy} title={hash} style={{
+      background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'right',
+      fontFamily: 'Geist Mono, monospace', fontSize: secondary ? 11 : 13, fontWeight: secondary ? 500 : 600,
+      color: secondary ? 'var(--text-muted)' : 'inherit',
+    }}>
+      {hash.length > 22 ? `${hash.slice(0, 10)}…${hash.slice(-8)}` : hash}{copied ? ' ✓' : ' ⧉'}
+    </button>
+  );
 }
 function TxDetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -2907,7 +2940,7 @@ function TxDetailRow({ label, children }: { label: string; children: React.React
 }
 
 function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) {
-  const { coins } = usePortfolioCtx();
+  const { coins, saveNativeHash } = usePortfolioCtx();
   const title = tx.type === 'Send' ? 'Sent' : tx.type === 'Receive' ? 'Received' : tx.type === 'Swap' ? 'Swap' : 'Transaction';
   const amountNum = tx.rawAmount ?? 0;
   const amountStr = amountNum.toLocaleString('en-US', { maximumFractionDigits: 6 });
@@ -2938,11 +2971,33 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
     ? '≈ ' + withCurrencyAffix(convertFromUsd(det.feeUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
     : null;
   const nonceText = det?.nonce != null ? String(det.nonce) : (detLoading ? '…' : '—');
+  const isLitho = (tx.chainId ?? det?.chainId) === LITHO_MAINNET;
+
+  // Lithosphere: the native hash LithoScan shows first. A send made here (or
+  // a row saved before rows carried it) doesn't know it yet — ask LithoScan
+  // and save it on the row, so it's looked up once.
+  const [nativeHash, setNativeHashShown] = useState(tx.nativeHash);
+  useEffect(() => {
+    setNativeHashShown(tx.nativeHash);
+    if (tx.nativeHash || !tx.txHash || !isLitho) return;
+    let cancel = false;
+    const evmHash = tx.txHash;
+    void fetchLithoNativeHash(evmHash).then(h => {
+      if (!h) return;
+      saveNativeHash(evmHash, h);
+      if (!cancel) setNativeHashShown(h);
+    });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- saveNativeHash is rebuilt every render
+  }, [tx.txHash, tx.nativeHash, isLitho]);
+
   // The explorer's counterparty first: for a token transfer the chain's
-  // `to` is the token contract, not the recipient.
-  const counterparty = tx.counterparty ?? (tx.pos ? det?.from : det?.to);
+  // `to` is the token contract, not the recipient. litho1… on Lithosphere.
+  const cpRaw = tx.counterparty ?? (tx.pos ? det?.from : det?.to);
+  const counterparty = cpRaw ? lithoDisplayAddr(cpRaw, isLitho ? LITHO_MAINNET : undefined) : null;
   const cpLabel = tx.pos ? 'From' : 'Recipient';
-  const explorer = det?.explorerTxUrl ?? null;
+  // LithoScan's page takes either hash; the native one is its own form.
+  const explorer = isLitho && tx.txHash ? lithoscanTxUrl(nativeHash || tx.txHash) : (det?.explorerTxUrl ?? null);
 
   return (
     <Modal title={title} onClose={onClose}>
@@ -2954,12 +3009,29 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
       <div className="card" style={{ padding: '2px 14px', marginBottom: 12 }}>
         <TxDetailRow label="Date">{fmtTxDateTime(tx.rawTs)}</TxDetailRow>
         <TxDetailRow label="Status"><span style={{ color: statusColor, fontWeight: 700 }}>{tx.status}</span></TxDetailRow>
-        {counterparty && <TxDetailRow label={cpLabel}><span style={{ fontFamily: 'Geist Mono, monospace' }}>{shortTxAddr(counterparty)}</span></TxDetailRow>}
+        {counterparty && <TxDetailRow label={cpLabel}><span title={counterparty} style={{ fontFamily: 'Geist Mono, monospace' }}>{shortTxAddr(counterparty)}</span></TxDetailRow>}
         {(det?.networkName ?? tx.network) && <TxDetailRow label="Network">{det?.networkName ?? tx.network}</TxDetailRow>}
       </div>
 
       {tx.txHash && (
         <div className="card" style={{ padding: '2px 14px', marginBottom: 12 }}>
+          {/* Lithosphere: the native hash first, as LithoScan shows it, and the
+              0x one as a smaller "EVM hash" line — the only one until
+              LithoScan has indexed a send made here. */}
+          {isLitho && !nativeHash ? (
+            <TxDetailRow label="EVM hash"><TxHashCopy hash={tx.txHash}/></TxDetailRow>
+          ) : (
+            <TxDetailRow label="Transaction hash">
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+                <TxHashCopy hash={isLitho && nativeHash ? nativeHash : tx.txHash}/>
+                {isLitho && (
+                  <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)' }}>
+                    EVM hash <TxHashCopy hash={tx.txHash} secondary/>
+                  </span>
+                )}
+              </span>
+            </TxDetailRow>
+          )}
           <TxDetailRow label="Network fee">
             <span>
               <div>{feeText}</div>
@@ -2973,7 +3045,7 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
       {explorer && (
         <a href={explorer} target="_blank" rel="noreferrer" className="btn-outline"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, textDecoration: 'none', color: 'var(--green, #10b981)', fontWeight: 700, padding: '12px' }}>
-          View on block explorer
+          {isLitho ? 'View on LithoScan' : 'View on block explorer'}
         </a>
       )}
     </Modal>
@@ -3476,9 +3548,11 @@ function buildEvmSendAssets(coins: DisplayCoin[]): DisplayCoin[] {
 
 /** One-tap recipients for moving funds between the user's own accounts.
  *  EVM addresses are shared across Lithosphere and every EVM network, so this
- *  is offered for EVM sends only. Private-key wallets have a single account. */
-function OwnAccountPicker({ seed, current, to, onPick }: {
-  seed: string[]; current: string; to: string; onPick: (address: string) => void;
+ *  is offered for EVM sends only. Private-key wallets have a single account.
+ *  On Lithosphere they show and fill in as litho1… (resolveRecipient turns it
+ *  back into the 0x the send is signed to). */
+function OwnAccountPicker({ seed, current, to, chainId, onPick }: {
+  seed: string[]; current: string; to: string; chainId?: number; onPick: (address: string) => void;
 }) {
   const mine = useMemo(() => {
     if (seed.length < 12) return [] as Array<{ idx: number; name: string; address: string }>;
@@ -3495,10 +3569,12 @@ function OwnAccountPicker({ seed, current, to, onPick }: {
       <div className="field-label" style={{ marginBottom: 4 }}>My accounts</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {mine.map((a) => {
-          const sel = to.trim().toLowerCase() === a.address.toLowerCase();
+          const shown = lithoDisplayAddr(a.address, chainId);
+          const v = to.trim().toLowerCase();
+          const sel = v === a.address.toLowerCase() || v === shown.toLowerCase();
           return (
             <button
-              key={a.idx} type="button" onClick={() => onPick(a.address)}
+              key={a.idx} type="button" onClick={() => onPick(shown)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px',
                 borderRadius: 10, border: '1px solid ' + (sel ? 'var(--blue, #3b7af7)' : 'transparent'),
@@ -3510,7 +3586,7 @@ function OwnAccountPicker({ seed, current, to, onPick }: {
               </span>
               <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>{a.name}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{a.address.slice(0, 8)}…{a.address.slice(-6)}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{shortAddress(shown)}</span>
               </span>
               {sel && <span style={{ marginLeft: 'auto', color: 'var(--blue, #3b7af7)' }}>✓</span>}
             </button>
@@ -3534,7 +3610,7 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
    *  editable; this only seeds the field. */
   initialTo?: string;
 }) {
-  const { coins, reload } = usePortfolioCtx();
+  const { coins, reload, saveNativeHash } = usePortfolioCtx();
   const seed = useWalletSeed();
   const [networkId, setNetworkId] = useState<string>(initialNetworkId(initialChain, initialChainId));
   const network = networkById(networkId);
@@ -3757,13 +3833,46 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
     }
   };
 
+  // Lithosphere: the hash a send gets back is the 0x EVM one. LithoScan has
+  // the native hash once it indexes the send — ask a few times while this
+  // screen is up, and save it on the Activity row.
+  const sentOnLitho = !!txHash && chain === 'evm' && network.chainId === LITHO_MAINNET;
+  const [sentNative, setSentNative] = useState<string | null>(null);
+  useEffect(() => {
+    if (!txHash || !sentOnLitho) return;
+    let cancel = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async (left: number) => {
+      const h = await fetchLithoNativeHash(txHash);
+      if (cancel) return;
+      if (h) { setSentNative(h); saveNativeHash(txHash, h); return; }
+      if (left > 1) timer = setTimeout(() => void ask(left - 1), 5_000);
+    };
+    timer = setTimeout(() => void ask(6), 3_000);
+    return () => { cancel = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- saveNativeHash is rebuilt every render
+  }, [txHash, sentOnLitho]);
+
   if (txHash) return (
     <Modal title="Send" onClose={onClose}>
       <div className="modal-success">
         <div className="success-icon">✓</div>
         <div className="success-title">Transaction Sent</div>
         <div className="success-sub">{amount} {chain === 'evm' ? (coin?.sym ?? '') : DESKTOP_CHAIN_META[chain].sym} broadcast on {chain === 'evm' ? network.label : DESKTOP_CHAIN_META[chain].label}</div>
-        <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all', margin: '10px 0' }}>{txHash}</div>
+        {sentOnLitho ? (
+          <div style={{ margin: '10px 0' }}>
+            {sentNative && (
+              <>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: 0.4 }}>Transaction hash</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all', marginBottom: 8 }}>{sentNative}</div>
+              </>
+            )}
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: 0.4 }}>EVM hash</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all' }}>{txHash}</div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all', margin: '10px 0' }}>{txHash}</div>
+        )}
         <button className="btn-primary" onClick={onClose}>Done</button>
       </div>
     </Modal>
@@ -3799,11 +3908,11 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
         )}
 
         <label className="field-label" style={{ marginTop: 14 }}>Recipient address</label>
-        <input className="field-input" placeholder={DESKTOP_CHAIN_META[chain].placeholder} value={to} onChange={e => setTo(e.target.value)}/>
+        <input className="field-input" placeholder={network.chainId === LITHO_MAINNET ? 'litho1… , 0x… or name.litho' : DESKTOP_CHAIN_META[chain].placeholder} value={to} onChange={e => setTo(e.target.value)}/>
         {chain === 'evm' && /^0x[0-9a-fA-F]{40}$/.test(to.trim()) && checkRecipient(to.trim()) && (
           <div role="alert" style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4, fontWeight: 600 }}>{checkRecipient(to.trim())}</div>
         )}
-        {chain === 'evm' && <OwnAccountPicker seed={seed} current={address ?? ''} to={to} onPick={setTo}/>}
+        {chain === 'evm' && <OwnAccountPicker seed={seed} current={address ?? ''} to={to} chainId={network.chainId} onPick={setTo}/>}
         {!!initialTo && to === initialTo && (
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
             Pre-filled — Quantt agent deposit address.
@@ -3888,7 +3997,7 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
           {hwBusy && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>Connecting to device…</div>}
           {hwAddress && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-              Sending from <span style={{ fontFamily: 'Geist Mono, monospace', color: 'var(--text-secondary)' }}>{hwAddress.slice(0, 8)}…{hwAddress.slice(-6)}</span>
+              Sending from <span style={{ fontFamily: 'Geist Mono, monospace', color: 'var(--text-secondary)' }}>{shortAddress(chain === 'evm' ? lithoDisplayAddr(hwAddress, network.chainId) : hwAddress)}</span>
               <br/>Confirm on your {signer === 'ledger' ? 'Ledger' : 'Trezor'} when prompted.
             </div>
           )}
@@ -4039,9 +4148,10 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
   } as const;
 
   const addr =
-    // EVM tab covers Lithosphere AND every external EVM chain, so default to the
-    // 0x form — it's the only address MetaMask / Coinbase / etc. recognise
-    // when receiving ETH/USDC/etc. The litho1 bech32 form is the alternate.
+    // Lithosphere networks default to the litho1 form, with 0x as the
+    // secondary "EVM address" (client 2026-10-15: "make litho1 first
+    // class"). External EVM chains show 0x only — the only address MetaMask /
+    // Coinbase / etc. recognise when receiving ETH/USDC/etc.
     chain === 'evm'  ? (showAlt && lithoAddr ? lithoAddr : evmAddr)
     : chain === 'btc'  ? btcAddr
     : chain === 'sol'  ? solAddr
@@ -4090,8 +4200,8 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
             borderRadius: 999, padding: 3, marginBottom: 12,
           }}>
             {[
-              { isAlt: false, label: 'EVM (0x)' },
-              { isAlt: true,  label: 'Litho1'    },
+              { isAlt: true,  label: 'Litho1'      },
+              { isAlt: false, label: 'EVM address' },
             ].map(o => {
               const selected = o.isAlt === showAlt;
               return (
@@ -4122,7 +4232,7 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
           <TokenAvatar sym={network.iconSym} color={network.color} className="coin-select-avatar" style={{ width: 18, height: 18, fontSize: 8 }} label={network.iconSym.slice(0, 1)} />
           {network.label}
         </div>
-        <div style={{ fontSize: 10, color: network.color, fontWeight: 600, marginBottom: 8 }}>● {chain === 'evm' ? 'One address — works on Lithosphere Mainnet + every EVM chain' : meta[chain].network}</div>
+        <div style={{ fontSize: 10, color: network.color, fontWeight: 600, marginBottom: 8 }}>● {chain === 'evm' ? (isDualAddressNetwork ? 'Your Lithosphere address' : 'One address — works on Lithosphere Mainnet + every EVM chain') : meta[chain].network}</div>
         {chain !== 'evm' && chainBalance && (
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
             Balance: {chainBalance}
@@ -4132,17 +4242,19 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
         {chain === 'evm' && lithoAddr && isDualAddressNetwork ? (
           <>
             <AddrFormatRow label="Litho1" value={lithoAddr}/>
-            <AddrFormatRow label="EVM (0x)" value={evmAddr}/>
+            <AddrFormatRow label="EVM address" value={evmAddr}/>
           </>
         ) : (
           <div className="addr-box" style={{ fontSize: 10 }}>{addr ? <HiAddr value={addr} full/> : '—'}</div>
         )}
 
         <button className="btn-primary" onClick={copy} style={{ marginTop: 14, width: '100%' }} disabled={!addr}>
-          {copied ? '✓ Copied!' : `Copy ${chain === 'evm' && isDualAddressNetwork ? (showAlt ? 'Litho1' : 'EVM (0x)') : 'Address'}`}
+          {copied ? '✓ Copied!' : `Copy ${chain === 'evm' && isDualAddressNetwork ? (showAlt ? 'Litho1' : 'EVM address') : 'Address'}`}
         </button>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.6 }}>
-          {chain === 'evm'
+          {chain === 'evm' && isDualAddressNetwork
+            ? 'Share your litho1 address. The EVM address is the same account, for apps that only accept 0x.'
+            : chain === 'evm'
             ? 'Both formats above are the SAME wallet — receives assets on Lithosphere Mainnet and every EVM chain (Ethereum, BNB, Polygon, Base, Arbitrum, Optimism, Linea, Avalanche).'
             : `Only send ${network.label} assets to this address.`}
         </div>
@@ -6156,6 +6268,9 @@ function App() {
   };
   const walletAddr = addrs.evm;
   const shortAddr  = addrs.short;
+  // The account shows by its Lithosphere address, litho1…; the 0x form is
+  // the secondary "EVM address" (client 2026-10-15: "make litho1 first class").
+  const walletLitho = lithoDisplayAddr(walletAddr, LITHO_MAINNET);
   const portfolio  = usePortfolio(walletAddr, walletSeed);
 
   useEffect(() => {
@@ -6334,7 +6449,7 @@ function App() {
               </div>
               <div className="chip-info">
                 <span className="chip-name">{walletSeed.length > 0 ? `Account ${activeIdx + 1}` : ACCOUNT.name}</span>
-                <span className="chip-addr"><HiAddr value={walletAddr || shortAddr} head={8} tail={6}/></span>
+                <span className="chip-addr"><HiAddr value={walletLitho || shortAddr} head={8} tail={6}/></span>
               </div>
               <ChevDown size={11} color="var(--text-muted)"/>
             </button>
@@ -6352,7 +6467,7 @@ function App() {
                     </div>
                     <div>
                       <div className="menu-name">{walletSeed.length > 0 ? `Account ${activeIdx + 1}` : ACCOUNT.name}</div>
-                      <div className="menu-addr" title={walletAddr}><HiAddr value={walletAddr} head={8} tail={6}/></div>
+                      <div className="menu-addr" title={walletLitho}><HiAddr value={walletLitho} head={8} tail={6}/></div>
                     </div>
                   </div>
 
@@ -6363,12 +6478,20 @@ function App() {
 
                   <div className="menu-divider"/>
 
-                  <button className="menu-item" onClick={() => { navigator.clipboard?.writeText(walletAddr); setAccountMenu(false); }}>
+                  <button className="menu-item" onClick={() => { navigator.clipboard?.writeText(walletLitho); setAccountMenu(false); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                     </svg>
                     Copy address
+                  </button>
+                  {/* The same account in 0x form, for apps that only take that. */}
+                  <button className="menu-item" onClick={() => { navigator.clipboard?.writeText(walletAddr); setAccountMenu(false); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                    Copy EVM address
                   </button>
 
                   <button className="menu-item" onClick={() => { setView('settings'); setAccountMenu(false); }}>

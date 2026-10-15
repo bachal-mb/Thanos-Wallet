@@ -95,6 +95,7 @@ function activityFromStore(address: string): DisplayTx[] {
       pos: received,
       color: coinColor(t.sym),
       ...(t.hash ? { txHash: t.hash } : {}),
+      ...(t.nativeHash ? { nativeHash: t.nativeHash } : {}),
       ts: new Date(t.ts).toISOString(),
       rawAmount: parseFloat(amt.replace(/,/g, '')) || 0,
       status,
@@ -143,6 +144,9 @@ export interface DisplayTx {
    *  hash for the on-chain fee/nonce lookup, ISO timestamp for the date-time
    *  line, numeric amount for the ≈fiat hero, raw indexer status. */
   txHash?: string;
+  /** Lithosphere's own hash (no 0x) — shown first, with txHash as the
+   *  secondary "EVM hash". Unset until LithoScan has reported it. */
+  nativeHash?: string;
   ts?: string;
   rawAmount?: number;
   status?: string;
@@ -154,6 +158,8 @@ export interface DisplayTx {
 }
 
 export interface PortfolioState {
+  /** The account these are for (0x) — its saved history is keyed by it. */
+  address:  string;
   coins:    DisplayCoin[];
   activity: DisplayTx[];
   totalUsd: number;
@@ -169,7 +175,7 @@ export interface PortfolioState {
 /** Build the initial hook state, seeded synchronously from this address's
  *  last-known snapshot so the (re)mounted popup paints real numbers instantly.
  *  loading stays true — a background refresh always runs. */
-function initialStateFor(address: string): Omit<PortfolioState, 'reload'> {
+function initialStateFor(address: string): Omit<PortfolioState, 'reload' | 'address'> {
   const snap = /^0x[0-9a-fA-F]{40}$/.test(address || '') ? loadSnapshot(address) : null;
   return snap
     ? { coins: snap.coins, activity: snap.activity, totalUsd: snap.totalUsd, loading: true, offline: false }
@@ -178,7 +184,7 @@ function initialStateFor(address: string): Omit<PortfolioState, 'reload'> {
 
 export function usePortfolio(address: string, seed?: string[]): PortfolioState {
   const [nonce, setNonce] = useState(0);
-  const [state, setState] = useState<Omit<PortfolioState, 'reload'>>(() => initialStateFor(address));
+  const [state, setState] = useState<Omit<PortfolioState, 'reload' | 'address'>>(() => initialStateFor(address));
 
   const seedKey = seed?.join(' ') ?? '';
 
@@ -336,13 +342,13 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
     return () => { cancelled = true; };
   }, [address, nonce, seedKey]);
 
-  return { ...state, reload: () => setNonce((n) => n + 1) };
+  return { ...state, address, reload: () => setNonce((n) => n + 1) };
 }
 
 /* ─── Context — App fetches once, every screen reads it ──────────────── */
 
 export const PortfolioContext = createContext<PortfolioState>({
-  coins: [], activity: [], totalUsd: 0, loading: false, offline: false, reload: () => {},
+  address: '', coins: [], activity: [], totalUsd: 0, loading: false, offline: false, reload: () => {},
 });
 export function usePortfolioCtx(): PortfolioState {
   return useContext(PortfolioContext);

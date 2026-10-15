@@ -5,7 +5,7 @@
  * NEXT_PUBLIC_MULTX_MANIFEST_SHA256 — routes, bridges and tokens come only
  * from that signed manifest.
  */
-import { createThanosBridge, multxThanosConfig, bridgeSigner, type ThanosBridge } from '@thanos/sdk-core';
+import { createThanosBridge, multxThanosConfig, bridgeSigner, lithoscanTxUrl, type ThanosBridge } from '@thanos/sdk-core';
 import { browserRpcUrl, findEvmChain } from './evm-chains';
 import { walletFromSeed } from './signer';
 
@@ -26,6 +26,8 @@ export function multxChain(chainId: number): { name: string; nativeSymbol: strin
   const chain = findEvmChain(chainId);
   if (!chain) return { name: `Chain ${chainId}`, nativeSymbol: 'gas' };
   const base = chain.explorerUrl.replace(/\/+$/, '');
+  // LithoScan's tx pages are /txs/<hash>.
+  if (chainId === 9005) return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: lithoscanTxUrl };
   return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: base ? (h) => `${base}/tx/${h}` : undefined };
 }
 

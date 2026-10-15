@@ -20,6 +20,7 @@
  * wallet any more, 2026-09-29.)
  */
 import { fetchPriceQuotes } from '../tokens/pricing';
+import { lithoscanTxUrl } from '../history/chain-history';
 
 interface TxChain {
   chainId:      number;
@@ -47,8 +48,10 @@ const chainById = (id: number): TxChain | undefined => TX_CHAINS.find((c) => c.c
 
 const rpcUrlFor = (c: TxChain): string => c.rpcUrl;
 
-/* Explorers use /tx/<hash> (Lithoscan's /txs/ form redirects from it). */
-const explorerTx = (c: TxChain, hash: string): string => `${c.explorer}/tx/${hash}`;
+/* Explorers use /tx/<hash>; LithoScan's page is /txs/<hash> (its /tx/ only
+   redirects there), which takes the native or the 0x hash. */
+const explorerTx = (c: TxChain, hash: string): string =>
+  c.chainId === 9005 ? lithoscanTxUrl(hash) : `${c.explorer}/tx/${hash}`;
 
 /** Explorer tx URL for a known chain id, or null when the chain is unknown. */
 export function evmExplorerTxUrl(chainId: number, hash: string): string | null {

@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { HistoryRow } from '@thanos/sdk-core';
-import { mergeHistoryRows, type PendingTx } from './tx-store';
+import { loadPendingTxs, mergeHistoryRows, saveNativeHash, type PendingTx } from './tx-store';
+
+const NATIVE = '8A629CB5DE9BC3A5FDF9E4F93A3613E7A60F29A49B5DFA4C90208BECEB872632';
 
 const row = (over: Partial<HistoryRow>): HistoryRow => ({
   id: '0xaa:8453:native:in', hash: '0xaa', chain: 'evm', chainId: 8453, networkName: 'Base',
@@ -50,6 +52,21 @@ describe('mergeHistoryRows', () => {
     expect(mergeHistoryRows(first.list, rows).changed).toBe(false);
   });
 
+  it("keeps a Lithosphere row's native hash, and adds it to a send recorded on this device", () => {
+    const litho = { chainId: 9005, networkName: 'Lithosphere', sym: 'LITHO', nativeHash: NATIVE } as const;
+    const fresh = mergeHistoryRows([], [row({ id: '0xff:9005:native:in', hash: '0xff', ...litho })]);
+    expect(fresh.list[0]).toMatchObject({ hash: '0xff', nativeHash: NATIVE });
+
+    const sent = send({ id: '0xee', chainId: 9005, symbol: 'LITHO', direction: 'out', status: 'confirmed' });
+    const rows = [row({ id: '0xee:9005:native:out', hash: '0xee', direction: 'out', ...litho })];
+    const first = mergeHistoryRows([sent], rows);
+    expect(first.changed).toBe(true);
+    expect(first.list).toHaveLength(1);
+    // Still keyed by its 0x hash — only the native hash is added.
+    expect(first.list[0]).toMatchObject({ id: '0xee', nativeHash: NATIVE });
+    expect(mergeHistoryRows(first.list, rows).changed).toBe(false);
+  });
+
   it('keeps the newest 500, newest first', () => {
     const many = Array.from({ length: 500 }, (_, i) => row({ id: `r${i}`, hash: `h${i}`, ts: 10_000 + i }));
     const { list } = mergeHistoryRows([], many);
@@ -57,5 +74,25 @@ describe('mergeHistoryRows', () => {
     expect(list[0].id).toBe('r499');
     // Older than everything kept: dropped, so nothing changed.
     expect(mergeHistoryRows(list, [row({ id: 'old', hash: 'old', ts: 1 })]).changed).toBe(false);
+  });
+});
+
+describe('saveNativeHash', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('saves the native hash onto every row with that 0x hash, once', () => {
+    const mem = new Map<string, string>();
+    const setItem = vi.fn((k: string, v: string) => { mem.set(k, v); });
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('localStorage', { getItem: (k: string) => mem.get(k) ?? null, setItem });
+    mem.set('thanos.pending_txs', JSON.stringify([
+      send({ id: '0xAB', chainId: 9005, symbol: 'LITHO' }),
+      send({ id: '0xab:9005:native:in', hash: '0xab', chainId: 9005, direction: 'in' }),
+      send({ id: '0xcd', chainId: 9005 }),
+    ]));
+    saveNativeHash('0xab', NATIVE);
+    expect(loadPendingTxs().map(t => t.nativeHash)).toEqual([NATIVE, NATIVE, undefined]);
+    saveNativeHash('0xab', NATIVE);
+    expect(setItem).toHaveBeenCalledTimes(1);
   });
 });

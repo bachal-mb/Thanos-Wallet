@@ -5,7 +5,7 @@
  * VITE_MULTX_MANIFEST_SHA256 (release.yml maps the MULTX_* repository
  * variables) — routes, bridges and tokens come only from that manifest.
  */
-import { createThanosBridge, multxThanosConfig, bridgeSigner, type ThanosBridge } from '@thanos/sdk-core';
+import { createThanosBridge, multxThanosConfig, bridgeSigner, lithoscanTxUrl, type ThanosBridge } from '@thanos/sdk-core';
 import { HDNodeWallet, Mnemonic } from 'ethers';
 import { getActiveAccountIndex, isPrivateKeyWallet } from './vault';
 import { getExtEvmChain } from './custom-assets';
@@ -24,6 +24,8 @@ export function multxChain(chainId: number): { name: string; nativeSymbol: strin
   const chain = getExtEvmChain(chainId);
   if (!chain) return { name: `Chain ${chainId}`, nativeSymbol: 'gas' };
   const base = chain.explorerUrl.replace(/\/+$/, '');
+  // LithoScan's transaction pages are /txs/ (they take the 0x hash too).
+  if (chainId === 9005) return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: lithoscanTxUrl };
   return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: base ? (h) => `${base}/tx/${h}` : undefined };
 }
 

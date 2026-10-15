@@ -41,6 +41,11 @@ export interface LocalTx {
   networkName?:  string;
   counterparty?: string;
   tokenAddress?: string;
+  /** Lithosphere Mainnet: the transaction's native hash (64 hex, no 0x) —
+   *  what LithoScan shows first. `hash` stays the 0x EVM hash. Comes with
+   *  LithoScan's rows; a send made here gets it from setNativeHash once
+   *  LithoScan has indexed it. */
+  nativeHash?:   string;
 }
 
 const keyFor = (addr: string) => `thanos-local-activity:${(addr || '').toLowerCase()}`;
@@ -81,6 +86,7 @@ const keyOf = (t: LocalTx) => (t.id || t.hash).toLowerCase();
  *  the explorer's verdict instead of being listed twice — its outgoing row
  *  takes the send's place, keeping what was recorded at broadcast. Anything
  *  else is new (older history, a receive, or a send from another wallet).
+ *  A Lithosphere row's native hash is carried onto the saved row either way.
  *  Keeps the newest MAX. Returns true when the saved list changed. */
 export function mergeHistoryRows(addr: string, rows: LocalTx[]): boolean {
   if (!addr || rows.length === 0 || typeof localStorage === 'undefined') return false;
@@ -88,6 +94,7 @@ export function mergeHistoryRows(addr: string, rows: LocalTx[]): boolean {
   const byKey = new Map(arr.map((t) => [keyOf(t), t]));
   const settle = (t: LocalTx, r: LocalTx) => {
     if (r.status && r.status !== 'pending') t.status = r.status;
+    if (r.nativeHash && !t.nativeHash) t.nativeHash = r.nativeHash;
   };
   for (const r of rows) {
     const hit = byKey.get(keyOf(r));
@@ -118,6 +125,22 @@ export function mergeHistoryRows(addr: string, rows: LocalTx[]): boolean {
   } catch {
     return false; // storage full / disabled — non-fatal
   }
+}
+
+/** Save the native hash LithoScan gave for a Lithosphere transaction known by
+ *  its 0x EVM hash (a send made here, or a row saved before rows carried it),
+ *  so it's looked up only once. Returns true when a saved row changed. */
+export function setNativeHash(addr: string, evmHash: string, nativeHash: string): boolean {
+  if (!addr || !evmHash || !nativeHash || typeof localStorage === 'undefined') return false;
+  const h = evmHash.toLowerCase();
+  let changed = false;
+  const next = getLocalActivity(addr).map((t) => {
+    if (t.hash.toLowerCase() !== h || t.nativeHash) return t;
+    changed = true;
+    return { ...t, nativeHash };
+  });
+  if (!changed) return false;
+  try { localStorage.setItem(keyFor(addr), JSON.stringify(next)); return true; } catch { return false; }
 }
 
 type Lookup = 'confirmed' | 'failed' | 'unknown' | null;

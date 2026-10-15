@@ -5,7 +5,7 @@
  * (lib/multx-thanos.ts). */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  bridgeErrorMessage, bridgeTransferLabel, formatBridgeAmount, parseBridgeAmount,
+  bridgeErrorMessage, bridgeTransferLabel, evmToLitho, formatBridgeAmount, parseBridgeAmount,
   type MultXBridgeOption, type MultXBridgeStep, type MultXBridgeTransfer,
 } from '@thanos/sdk-core';
 import { Wallet } from 'ethers';
@@ -29,14 +29,26 @@ const ROW: React.CSSProperties = { display: 'flex', justifyContent: 'space-betwe
 
 const short = (h: string) => `${h.slice(0, 10)}…${h.slice(-6)}`;
 
+/** The wallet's address as shown for a chain: litho1… on Lithosphere Mainnet
+ *  (client 2026-10-15: "make litho1 first class"), 0x elsewhere. Display only. */
+function shortAddrOn(address: string, chainId: number | null): string {
+  if (chainId === 9005) {
+    try { const l = evmToLitho(address); return `${l.slice(0, 10)}…${l.slice(-4)}`; } catch { /* not 0x — shown as is */ }
+  }
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
 function TxLink({ chainId, hash, label }: { chainId: number; hash?: string; label: string }) {
   if (!hash) return null;
   const href = multxChain(chainId).explorerTx?.(hash);
+  // Lithosphere transactions go by their native hash, which only LithoScan
+  // knows — no 0x snippet; the link opens the transaction there.
+  const litho = chainId === 9005;
   return (
     <div style={ROW}>
       <span>{label}</span>
       {href
-        ? <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue, #3b7af7)', fontFamily: 'monospace', fontSize: 12 }}>{short(hash)}</a>
+        ? <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue, #3b7af7)', fontFamily: litho ? undefined : 'monospace', fontSize: 12 }}>{litho ? 'View on LithoScan' : short(hash)}</a>
         : <code style={{ fontSize: 12 }}>{short(hash)}</code>}
     </div>
   );
@@ -187,7 +199,7 @@ export function MultXBridgePanel({ seed }: { seed: string[] }) {
       {option && from && to && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.5 }}>
           Arrives at <strong style={{ color: 'var(--text-secondary)' }}>your address on {to.name}</strong>
-          {address ? <> ({address.slice(0, 6)}…{address.slice(-4)})</> : null}. The network fee is paid
+          {address ? <> ({shortAddrOn(address, dst)})</> : null}. The network fee is paid
           in {from.nativeSymbol} on {from.name}{base ? '; the first transfer of a token also needs an approval' : ''}.
         </div>
       )}

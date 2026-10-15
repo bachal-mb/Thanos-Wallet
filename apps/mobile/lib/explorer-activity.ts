@@ -13,13 +13,15 @@
  * renders them through the same row code.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { HistoryRow } from './chain-history';
+import { fetchLithoNativeHash, type HistoryRow } from './chain-history';
 import type { IndexerActivityItem } from './indexer';
-import type { LocalActivityItem } from './local-activity';
+import { setLocalNativeHash, type LocalActivityItem } from './local-activity';
+import { getActivitySnapshot, setActivitySnapshot } from './portfolio-cache';
 
-/** An explorer row as Activity shows it: the network it's on, and the token
- *  contract for a token transfer. */
-export type HistoryActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain' | 'networkName' | 'tokenAddress'>>;
+/** An explorer row as Activity shows it: the network it's on, the token
+ *  contract for a token transfer, and a Lithosphere transaction's native
+ *  hash. */
+export type HistoryActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain' | 'networkName' | 'tokenAddress' | 'nativeHash'>>;
 
 function isoOf(ms: number): string | undefined {
   const d = new Date(ms);
@@ -46,6 +48,7 @@ export function historyActivityItem(r: HistoryRow): HistoryActivityItem {
     ...(r.counterparty ? { counterparty: r.counterparty } : {}),
     ...(r.tokenAddress ? { tokenAddress: r.tokenAddress } : {}),
     ...(r.blockNumber != null ? { blockNumber: r.blockNumber } : {}),
+    ...(r.nativeHash ? { nativeHash: r.nativeHash } : {}),
   };
 }
 
@@ -54,16 +57,44 @@ export function historyActivityItem(r: HistoryRow): HistoryActivityItem {
  *  Activity. Fresh rows replace every saved row of their transaction — a
  *  status that has settled, and rows saved under the older one-row-per-hash
  *  ids ("mainnet:<hash>"); a swap's legs share a hash, so rows are otherwise
- *  kept per id. Newest first, at most `max` rows. */
-export function accumulateActivity<T extends IndexerActivityItem>(saved: T[], fresh: T[], max = 500): T[] {
+ *  kept per id. A native hash saved on a row (saveNativeHash) stays on a
+ *  fresh row that doesn't carry one. Newest first, at most `max` rows. */
+export function accumulateActivity<T extends IndexerActivityItem & { nativeHash?: string }>(saved: T[], fresh: T[], max = 500): T[] {
   const hashOf = (i: T) => (i.txHash ? i.txHash.toLowerCase() : '');
   const freshHashes = new Set(fresh.map(hashOf).filter(Boolean));
+  const nativeOf = new Map<string, string>();
+  for (const i of saved) if (i.nativeHash && hashOf(i)) nativeOf.set(hashOf(i), i.nativeHash);
   const byId = new Map<string, T>();
   for (const i of saved) if (!freshHashes.has(hashOf(i))) byId.set(i.id || hashOf(i), i);
-  for (const i of fresh) byId.set(i.id || hashOf(i), i);
+  for (const i of fresh) {
+    const native = i.nativeHash ? undefined : nativeOf.get(hashOf(i));
+    byId.set(i.id || hashOf(i), native ? { ...i, nativeHash: native } : i);
+  }
   return [...byId.values()]
     .sort((a, b) => (b.ts ? Date.parse(b.ts) : 0) - (a.ts ? Date.parse(a.ts) : 0))
     .slice(0, max);
+}
+
+/** Put a Lithosphere transaction's native hash on every saved row of it —
+ *  the history and the send recorded on this device — by its 0x hash. */
+export async function saveNativeHash(address: string, evmHash: string, nativeHash: string): Promise<void> {
+  const h = evmHash.toLowerCase();
+  const snap = await getActivitySnapshot(address);
+  const items = (snap?.items ?? []) as HistoryActivityItem[];
+  if (items.some((i) => i.txHash?.toLowerCase() === h && i.nativeHash !== nativeHash)) {
+    await setActivitySnapshot(address, items.map((i) => (i.txHash?.toLowerCase() === h ? { ...i, nativeHash } : i)));
+  }
+  await setLocalNativeHash(address, evmHash, nativeHash);
+}
+
+/** The native hash of a Lithosphere transaction Activity knows only by its 0x
+ *  hash — a send made on this device, or a row saved before explorer rows
+ *  carried it. Looked up on LithoScan when its detail opens and saved on its
+ *  rows, so it's looked up once; null until LithoScan has indexed it. */
+export async function lookupNativeHash(address: string, evmHash: string): Promise<string | null> {
+  const native = await fetchLithoNativeHash(evmHash);
+  if (native && address) await saveNativeHash(address, evmHash, native).catch(() => { /* best-effort */ });
+  return native;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

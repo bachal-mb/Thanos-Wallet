@@ -6,7 +6,7 @@
  * variables) — routes, bridges and tokens come only from that manifest.
  * History lives in storage.local, shared by the popup and the side panel.
  */
-import { createThanosBridge, multxThanosConfig, bridgeSigner, type ThanosBridge } from '@thanos/sdk-core';
+import { createThanosBridge, multxThanosConfig, bridgeSigner, lithoscanTxUrl, type ThanosBridge } from '@thanos/sdk-core';
 import { HDNodeWallet, Mnemonic } from 'ethers';
 import { getActiveAccountIndex, isPrivateKeyWallet } from './vault';
 import { allEvmChains } from './custom-assets';
@@ -26,6 +26,8 @@ export function multxRpcUrl(chainId: number): string | undefined {
 export function multxChain(chainId: number): { name: string; nativeSymbol: string; explorerTx?: (hash: string) => string } {
   const chain = chainById(chainId);
   if (!chain) return { name: `Chain ${chainId}`, nativeSymbol: 'gas' };
+  // LithoScan's transaction pages are /txs/<hash>.
+  if (chainId === 9005) return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: lithoscanTxUrl };
   const base = chain.explorerUrl.replace(/\/+$/, '');
   return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: base ? (h) => `${base}/tx/${h}` : undefined };
 }

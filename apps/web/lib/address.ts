@@ -24,6 +24,17 @@ export {
   DUAL_ADDRESS_CHAIN_IDS, LITHO_BECH32_PREFIX,
 };
 
+/** Lithosphere Mainnet. */
+export const LITHO_MAINNET_CHAIN_ID = 9005;
+
+/** An address as the wallet shows it on its network. Lithosphere Mainnet
+ *  goes by litho1…, as LithoScan shows it (client 2026-10-15: "make litho1
+ *  first class"); every other network keeps the form it was given. Display
+ *  only — what's stored and sent stays 0x. */
+export function displayAddress(address: string, chainId: number | null | undefined): string {
+  if (chainId !== LITHO_MAINNET_CHAIN_ID || !isEvmAddress(address)) return address;
+  try { return evmToLitho(address); } catch { return address; }
+}
 
 export interface DualAddress {
   /** EIP-55 checksummed `0x…`. Always present once a wallet is unlocked. */

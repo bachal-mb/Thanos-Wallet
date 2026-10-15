@@ -4,7 +4,7 @@ import { TOKENS, SWAP_STABLES, swapPriceUsd, swapRateFor } from '../lib/tokens';
 import { usePrices } from '../lib/usePrices';
 import { useWallet } from './shell/AppShell';
 import {
-  validateAddressForChain, resolveToEvm, truncateLithoAddress,
+  validateAddressForChain, resolveToEvm, truncateLithoAddress, displayAddress,
 } from '../lib/address';
 import {
   SendError,
@@ -62,7 +62,7 @@ import { classifyRecipient } from '../lib/phishing';
 import { PhishingBanner } from './PhishingBanner';
 import { simulateEvmSend, type SimulationReport } from '../lib/simulation';
 import { SimulationPanel, hasCriticalIssue } from './SimulationPanel';
-import { bridgePollBackoffMs, convertFromUsd, withCurrencyAffix } from '@thanos/sdk-core';
+import { bridgePollBackoffMs, convertFromUsd, withCurrencyAffix, lithoscanTxUrl } from '@thanos/sdk-core';
 import * as RadixSelect from '@radix-ui/react-select';
 import { QrCode, Check, ChevronDown, Wallet } from 'lucide-react';
 
@@ -1032,36 +1032,43 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
   /* ─── Result states (broadcast / pending / confirmed / failed) ───── */
 
   if (stage !== 'compose') {
+    // Lithosphere Mainnet: LithoScan's /txs/ page (it takes the 0x hash too).
+    const onLithoMainnet = isEvmSend && evmChainId === LITHO_MAINNET_CHAIN_ID;
     const explorer = txHash
       ? (isSolanaSend  ? solanaExplorerUrl(txHash)
        : isBitcoinSend ? bitcoinExplorerUrl(txHash)
        : isCosmosSend  ? cosmosExplorerUrl(txHash)
+       : onLithoMainnet ? lithoscanTxUrl(txHash)
        : isEvmSend && evmChain ? `${evmChain.explorerUrl}/tx/${txHash}`
        // Kamet: its own explorer — the explorer of the chain we actually sent on.
        : `https://explorer-3.litho.ai/tx/${txHash}`)
       : null;
+    // The recipient as Lithosphere shows it (litho1…), whichever form was typed.
+    const shownTo = displayAddress(to.trim(), evmChainId);
     return (
       <Modal title="Send" onClose={onClose}>
         <div className="modal-success">
           {stage === 'broadcasting' && <>
             <div className="success-icon" style={{ animation: 'lpScrollHint 1.4s ease-in-out infinite' }}>…</div>
             <div className="success-title">Signing &amp; broadcasting</div>
-            <div className="success-sub">Sending {amount} {coin} to <Addr value={to.trim()} head={10} tail={6}/></div>
+            <div className="success-sub">Sending {amount} {coin} to <Addr value={shownTo} head={10} tail={6}/></div>
           </>}
           {stage === 'pending' && <>
             <div className="success-icon">✓</div>
             <div className="success-title">Submitted</div>
             <div className="success-sub">Waiting for confirmation…</div>
+            {/* Lithosphere goes by its native hash, which LithoScan only has
+                once the tx is indexed — so a link, never the 0x hash. */}
             {txHash && <a href={explorer ?? '#'} target="_blank" rel="noreferrer"
-              style={{ fontSize: 11, color: 'var(--blue)', wordBreak: 'break-all', fontFamily: 'Geist Mono, monospace', marginTop: 6 }}>
-              {truncateLithoAddress(txHash, 14, 10)}
+              style={{ fontSize: 11, color: 'var(--blue)', wordBreak: 'break-all', fontFamily: onLithoMainnet ? undefined : 'Geist Mono, monospace', marginTop: 6 }}>
+              {onLithoMainnet ? 'View on LithoScan →' : truncateLithoAddress(txHash, 14, 10)}
             </a>}
             <button className="btn-primary" onClick={onClose} style={{ marginTop: 12 }}>Done</button>
           </>}
           {stage === 'confirmed' && <>
             <div className="success-icon" style={{ color: 'var(--green)' }}>✓</div>
             <div className="success-title">Confirmed</div>
-            <div className="success-sub">{amount} {coin} sent to <Addr value={to.trim()} head={10} tail={6}/></div>
+            <div className="success-sub">{amount} {coin} sent to <Addr value={shownTo} head={10} tail={6}/></div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
               on <strong style={{ color: 'var(--text-secondary)' }}>{getSendNetworks().find(n => n.id === network)?.label ?? network}</strong>
             </div>
@@ -1289,6 +1296,8 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {mine.map(a => {
                   const sel = to.trim().toLowerCase() === a.address.toLowerCase();
+                  // litho1… on Lithosphere Mainnet; the send still goes to its 0x form.
+                  const shown = displayAddress(a.address, evmChainId);
                   return (
                     <button
                       key={a.idx} type="button" onClick={() => { setTo(a.address); setShowSuggest(false); }}
@@ -1305,7 +1314,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
                       </span>
                       <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>{a.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{a.address.slice(0, 8)}…{a.address.slice(-6)}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{shown.slice(0, shown.startsWith('litho1') ? 12 : 8)}…{shown.slice(-6)}</span>
                       </span>
                       {sel && <span style={{ marginLeft: 'auto', color: 'var(--blue)', fontSize: 13 }}>✓</span>}
                     </button>
@@ -1342,7 +1351,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
                 onMouseOut={e  => (e.currentTarget.style.background = 'transparent')}
               >
                 <span style={{ fontSize: 12, fontWeight: 600 }}>{c.name}</span>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{c.evm}</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{displayAddress(c.evm, evmChainId)}</span>
               </button>
             ))}
           </div>
@@ -1361,7 +1370,15 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
             {matchedContact && !isSolanaSend && !isBitcoinSend && !isEvmSend && (
               <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>· {matchedContact.name}</span>
             )}
-            {recipientValidation.format === 'litho' && canonicalEvm && (
+            {/* Lithosphere Mainnet confirms the account as litho1… (a 0x input
+                shows its litho1 form); Kamet still shows a litho1 input's 0x. */}
+            {evmChainId === LITHO_MAINNET_CHAIN_ID ? (
+              recipientValidation.format === 'evm' && (
+                <span style={{ color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>
+                  · <Addr value={displayAddress(to.trim(), LITHO_MAINNET_CHAIN_ID)} head={8} tail={6}/>
+                </span>
+              )
+            ) : recipientValidation.format === 'litho' && canonicalEvm && (
               <span style={{ color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>
                 · <Addr value={canonicalEvm} head={8} tail={6}/>
               </span>
@@ -1445,9 +1462,11 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         {usingHardware && (
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, textAlign: 'center' }}>
             Signing via {usingLedger ? 'Ledger' : 'Trezor'} · {(() => {
-              const a = ledgerBtc?.address ?? ledgerSol?.address ?? ledgerEvm?.address
+              const raw = ledgerBtc?.address ?? ledgerSol?.address ?? ledgerEvm?.address
                      ?? trezorBtc?.address ?? trezorSol?.address ?? trezorEvm?.address ?? '';
-              return `${a.slice(0, 8)}…${a.slice(-6)}`;
+              // The signing account as litho1… on Lithosphere Mainnet.
+              const a = displayAddress(raw, evmChainId);
+              return `${a.slice(0, a.startsWith('litho1') ? 12 : 8)}…${a.slice(-6)}`;
             })()}
           </div>
         )}
@@ -1589,10 +1608,12 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
         name:         'Lithosphere',
         symbol:       'LITHO',
         color:        '#22c55e',
+        // litho1… first; the 0x form only as the secondary "EVM address"
+        // (client 2026-10-15: "make litho1 first class").
         address:      litho || evm,
         altAddress:   litho && evm ? evm : undefined,
         primaryLabel: 'Litho1',
-        altLabel:     'EVM',
+        altLabel:     'EVM address',
       });
     }
     // EVM chains — all share the wallet's single 0x address, surfaced as

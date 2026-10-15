@@ -10,7 +10,7 @@
  */
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { fetchEcosystemPrices, formatFiat } from '@thanos/sdk-core';
-import { getLocalActivity, resolvePendingActivity, type LocalTx } from './local-activity';
+import { getLocalActivity, resolvePendingActivity, setNativeHash, type LocalTx } from './local-activity';
 import { readSnapshot, writeSnapshot } from './portfolio-cache';
 import { syncWalletHistory } from './explorer-activity';
 import { getExtEvmChain } from './custom-assets';
@@ -80,6 +80,7 @@ function storedActivity(address: string): DisplayTx[] {
       pos: received,
       color: coinColor(t.sym),
       txHash: t.hash,
+      nativeHash: t.nativeHash,
       network,
       chainId: t.chainId,
       counterparty: t.counterparty,
@@ -127,6 +128,10 @@ export interface DisplayTx {
   status: 'Completed' | 'Pending' | 'Failed';
   amount: string; pos: boolean; color: string;
   txHash?: string;
+  /** Lithosphere Mainnet: the native hash (64 hex, no 0x) LithoScan shows
+   *  first — `txHash` is then the secondary EVM hash. Unknown for a send
+   *  made here until LithoScan has indexed it. */
+  nativeHash?: string;
   /** The network it happened on ("Base", "Bitcoin", …) — also the row's name. */
   network?: string;
   /** EVM rows: the chain the detail modal reads fee / nonce from. */
@@ -152,6 +157,9 @@ export interface PortfolioState {
   loading:  boolean;
   offline:  boolean;
   reload:   () => void;
+  /** Save a Lithosphere transaction's native hash on its stored row (looked
+   *  up by the detail view or after a send) and show it in the feed. */
+  saveNativeHash: (evmHash: string, nativeHash: string) => void;
 }
 
 /* ─── Fetch ──────────────────────────────────────────────────────────── */
@@ -166,7 +174,7 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
   // (loading still true — a background refresh is running). Never blocks or
   // changes the fetch below. Activity is saved on its own (local-activity.ts),
   // so it paints from there.
-  const [state, setState] = useState<Omit<PortfolioState, 'reload'>>(() => {
+  const [state, setState] = useState<Omit<PortfolioState, 'reload' | 'saveNativeHash'>>(() => {
     const snap = readSnapshot(address);
     return {
       coins:    snap?.coins ?? [],
@@ -333,13 +341,21 @@ export function usePortfolio(address: string, seed?: string[]): PortfolioState {
     return () => { cancelled = true; };
   }, [address, nonce, seedKey]);
 
-  return { ...state, reload: () => setNonce((n) => n + 1) };
+  return {
+    ...state,
+    reload: () => setNonce((n) => n + 1),
+    saveNativeHash: (evmHash, nativeHash) => {
+      if (setNativeHash(address, evmHash, nativeHash) && current.current === address) {
+        setState((s) => ({ ...s, activity: storedActivity(address) }));
+      }
+    },
+  };
 }
 
 /* ─── Context — App fetches once, every view reads it ────────────────── */
 
 export const PortfolioContext = createContext<PortfolioState>({
-  coins: [], activity: [], totalUsd: 0, loading: false, offline: false, reload: () => {},
+  coins: [], activity: [], totalUsd: 0, loading: false, offline: false, reload: () => {}, saveNativeHash: () => {},
 });
 export function usePortfolioCtx(): PortfolioState {
   return useContext(PortfolioContext);

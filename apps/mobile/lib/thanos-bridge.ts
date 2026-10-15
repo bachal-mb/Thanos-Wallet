@@ -13,6 +13,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { createThanosBridge, multxThanosConfig, bridgeSigner, type ThanosBridge } from './multx-thanos/service';
 import { allEvmChains } from './custom-assets';
+import { lithoscanTxUrl } from './chain-history';
 import { getActiveAccountIndex } from './accounts';
 
 export const MULTX_CONFIG = multxThanosConfig(
@@ -28,10 +29,12 @@ export function multxRpcUrl(chainId: number): string | undefined {
   return chainById(chainId)?.rpcUrl;
 }
 
-/** Display name, gas coin and explorer for a chain id. */
+/** Display name, gas coin and explorer for a chain id (LithoScan's
+ *  transaction pages are /txs/<hash>). */
 export function multxChain(chainId: number): { name: string; nativeSymbol: string; explorerTx?: (hash: string) => string } {
   const chain = chainById(chainId);
   if (!chain) return { name: `Chain ${chainId}`, nativeSymbol: 'gas' };
+  if (chainId === 9005) return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: lithoscanTxUrl };
   const base = chain.explorerUrl.replace(/\/+$/, '');
   return { name: chain.name, nativeSymbol: chain.nativeSymbol, explorerTx: base ? (h) => `${base}/tx/${h}` : undefined };
 }
