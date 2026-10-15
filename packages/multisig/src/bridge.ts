@@ -109,3 +109,12 @@ export class BridgeSigner extends AbstractSigner {
     }
   }
 }
+
+/**
+ * A copy with every bigint written as a decimal string, for bridges that pass requests as JSON
+ * (the extension's runtime messages). ethers reads uint fields and the domain's chainId from
+ * decimal strings, so the signature is the same.
+ */
+export function jsonSafe<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))) as T;
+}

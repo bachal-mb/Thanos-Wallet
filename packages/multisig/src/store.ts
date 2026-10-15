@@ -39,7 +39,8 @@ export const MAX_VAULT_NAME = 40;
 /** Strips control and bidirectional-override characters (a name must not reorder what's shown next to it). */
 export function cleanVaultName(name: string): string {
   return name
-    .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
     .trim()
     .slice(0, MAX_VAULT_NAME)
     .trim();
@@ -114,6 +115,16 @@ export class SavedVaults {
 
   async setScanCursor(account: string, block: number, found: Address[]): Promise<void> {
     await this.store.set(`${this.key}.scan.${account.toLowerCase()}`, JSON.stringify({ block, found: found.slice(0, MAX_SAVED_VAULTS) }));
+  }
+
+  /** Execution transactions this wallet sent, so the proposal screen can link them without an indexer. */
+  async executionTx(vault: Address, id: bigint): Promise<string | null> {
+    const tx = await this.store.get(`${this.key}.executed.${vault}.${id}`);
+    return tx && /^0x[0-9a-fA-F]{64}$/.test(tx) ? tx : null;
+  }
+
+  async setExecutionTx(vault: Address, id: bigint, hash: string): Promise<void> {
+    await this.store.set(`${this.key}.executed.${vault}.${id}`, hash);
   }
 }
 

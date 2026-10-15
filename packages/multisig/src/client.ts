@@ -4,8 +4,12 @@
  * and pass signatures between signers.
  */
 import {
+  Contract,
+  Interface,
   JsonRpcProvider,
   getAddress,
+  toBeHex,
+  zeroPadValue,
   type ContractTransactionReceipt,
   type ContractTransactionResponse,
 } from 'ethers';
@@ -18,6 +22,7 @@ import {
   VaultFactory,
   addSignature,
   callBuilders,
+  decodeCalls,
   describeError,
   ecosystemFor,
   emptyBundle,
@@ -86,6 +91,26 @@ export interface CreateMultisigInput {
   others: string[];
   threshold: number;
 }
+
+export interface ProposalLine {
+  id: bigint;
+  state: ProposalState;
+  /** "Send 1.5 LITHO to litho1…", plus "and 2 more calls" for batches. */
+  summary: string;
+  approvals: number;
+  required: number;
+  /** Whether the wallet's account has approved (null: it is not a signer). */
+  myApproval: boolean | null;
+  createdAt: bigint;
+}
+
+export interface AssetBalance {
+  token: TokenInfo;
+  amount: bigint;
+}
+
+const ERC20 = ['function balanceOf(address) view returns (uint256)'];
+const EXECUTED_TOPIC = new Interface(['event ProposalExecuted(uint256 indexed proposalId, address indexed executor)']).getEvent('ProposalExecuted')!.topicHash;
 
 const OPEN_STATES: readonly ProposalState[] = [ProposalState.PENDING, ProposalState.QUEUED, ProposalState.READY];
 /** Blocks per log query when scanning the factory's creation events. */
@@ -244,6 +269,65 @@ export class MultisigClient {
     return this.vault(address).snapshot();
   }
 
+  /** LITHO and every verified token the multisig holds. */
+  async balances(address: string): Promise<AssetBalance[]> {
+    const a = parseAddress(address);
+    if (!a) throw new Error('Invalid multisig address');
+    const tokens = ecosystemFor(this.network.chain.id).tokens;
+    const [native, ...held] = await Promise.all([
+      this.provider.getBalance(a),
+      ...tokens.map((t) => new Contract(t.address, ERC20, this.provider).getFunction('balanceOf')(a).then(BigInt).catch(() => 0n)),
+    ]);
+    return [{ token: NATIVE_TOKEN, amount: native }, ...tokens.map((token, i) => ({ token, amount: held[i]! })).filter((b) => b.amount > 0n)];
+  }
+
+  /** The transaction that executed a proposal: recorded when this wallet sent it, else from the indexer or the chain's logs. */
+  async executionTx(address: string, id: bigint): Promise<string | null> {
+    const a = parseAddress(address);
+    if (!a) return null;
+    const local = await this.saved.executionTx(a, id);
+    if (local) return local;
+    if (this.network.indexerUrl) {
+      try {
+        const res = await this.fetcher(`${this.network.indexerUrl}/v1/vaults/${a}/proposals/${id}`);
+        if (res.ok) {
+          const tx = ((await res.json()) as { proposal?: { executed_tx?: string } }).proposal?.executed_tx;
+          if (tx && /^0x[0-9a-fA-F]{64}$/.test(tx)) return tx;
+        }
+      } catch {
+        /* try the chain */
+      }
+    }
+    try {
+      const logs = await this.provider.getLogs({ address: a, topics: [EXECUTED_TOPIC, zeroPadValue(toBeHex(id), 32)], fromBlock: this.network.deployBlock, toBlock: 'latest' });
+      return logs[0]?.transactionHash ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Open proposals and recent closed ones as one-line summaries, newest first. */
+  async proposalLines(address: string, recent = 10): Promise<{ open: ProposalLine[]; closed: ProposalLine[] }> {
+    const { open, closed } = await this.proposals(address, recent);
+    const me = this.account?.toLowerCase();
+    const line = async (d: ProposalDetails): Promise<ProposalLine> => {
+      const decoded = await decodeCalls(d.calls, { vault: getAddress(address) as Address, registry: this.registry, chainId: this.network.chain.id }).catch(() => []);
+      const first = decoded[0]?.summary ?? `${d.calls.length} call${d.calls.length === 1 ? '' : 's'}`;
+      const more = decoded.length > 1 ? ` and ${decoded.length - 1} more call${decoded.length === 2 ? '' : 's'}` : '';
+      const mine = d.approvals.find((a) => a.signer.toLowerCase() === me);
+      return {
+        id: d.proposal.id,
+        state: d.state,
+        summary: `${first}${more}`,
+        approvals: Number(d.status.humanApprovals + d.status.agentApprovals),
+        required: Number(d.status.requiredApprovals),
+        myApproval: mine ? mine.approved : null,
+        createdAt: d.proposal.createdAt,
+      };
+    };
+    return { open: await Promise.all(open.map(line)), closed: await Promise.all(closed.map(line)) };
+  }
+
   /** Open proposals and the most recent closed ones, newest first. */
   async proposals(address: string, recent = 10): Promise<{ open: ProposalDetails[]; closed: ProposalDetails[] }> {
     const vault = this.vault(address);
@@ -318,9 +402,13 @@ export class MultisigClient {
     if (view && view.details.state !== ProposalState.READY && view.relayed && view.relayedValid > 0) {
       const snapshot = await vault.snapshot();
       const check = await verifyBundle(this.provider, view.relayed, this.identity(snapshot, view.details), approvalSigners(snapshot.signers));
-      return (await this.mined(vault.executeWithSignatures(id, check.valid))).hash;
+      const hash = (await this.mined(vault.executeWithSignatures(id, check.valid))).hash;
+      await this.saved.setExecutionTx(vault.address, id, hash);
+      return hash;
     }
-    return (await this.mined(vault.execute(id))).hash;
+    const hash = (await this.mined(vault.execute(id))).hash;
+    await this.saved.setExecutionTx(vault.address, id, hash);
+    return hash;
   }
 
   /** Cancels a proposal; only its proposer can do this directly. */

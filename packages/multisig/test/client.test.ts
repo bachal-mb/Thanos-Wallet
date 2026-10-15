@@ -173,3 +173,17 @@ describe('a 2-of-3 Thanos MultiSig, end to end', () => {
     expect(client.draftMultisig({ others: [], threshold: 2 }).errors.join()).toMatch(/Threshold must be between 1 and 1/);
   });
 });
+
+describe('bridges that pass requests as JSON', () => {
+  it('jsonSafe keeps an approval signature identical', async () => {
+    const { jsonSafe } = await import('../src');
+    const { TypedDataEncoder } = await import('ethers');
+    const domain = { name: 'LithoVault', version: '1', chainId: 9005n, verifyingContract: '0x5FbDB2315678afecb367f032d93F642f64180aa3' };
+    const types = { Approval: [{ name: 'proposalId', type: 'uint256' }, { name: 'validUntil', type: 'uint64' }] };
+    const message = { proposalId: 7n, validUntil: 1_800_000_000n };
+    const safe = jsonSafe({ domain, types, message });
+    expect(safe.domain.chainId).toBe('9005');
+    expect(safe.message.proposalId).toBe('7');
+    expect(TypedDataEncoder.hash(safe.domain, safe.types, safe.message)).toBe(TypedDataEncoder.hash(domain, types, message));
+  });
+});
