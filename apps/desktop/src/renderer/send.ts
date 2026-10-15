@@ -57,9 +57,10 @@ async function resolveDnnsName(name: string): Promise<string> {
 export async function resolveRecipient(input: string): Promise<string> {
   const s = (input || '').trim();
   if (/^0x[0-9a-fA-F]{40}$/.test(s)) return getAddress(s);
-  if (/^litho1[0-9a-z]+$/i.test(s)) return lithoToEvm(s);
+  // bech32 is one case; lithoToEvm wants it lower.
+  if (/^litho1[0-9a-z]+$/i.test(s)) return lithoToEvm(s.toLowerCase());
   if (/^[a-z0-9-]+\.litho$/i.test(s)) return resolveDnnsName(s);
-  throw new Error('Enter a 0x…, litho1…, or name.litho address');
+  throw new Error('Enter a litho1…, 0x…, or name.litho address');
 }
 
 /* ─── Send ───────────────────────────────────────────────────────────── */

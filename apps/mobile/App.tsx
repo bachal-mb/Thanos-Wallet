@@ -887,7 +887,8 @@ type ActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain
 
 /** Lithosphere Mainnet shows its addresses as litho1… and its transactions by
  *  their native hash, as LithoScan does — the 0x forms are secondary (client
- *  2026-10-15: "make litho1 first class"). Every other network keeps 0x. */
+ *  2026-10-15: "make litho1 first class", "the preferred standard"). Every
+ *  other network keeps 0x. */
 const LITHO_CHAIN_ID = 9005;
 
 /** An address as it's shown on `chainId`: on Lithosphere a 0x address in its
@@ -896,6 +897,16 @@ const LITHO_CHAIN_ID = 9005;
 function displayAddr(addr: string, chainId?: number): string {
   if (chainId !== LITHO_CHAIN_ID || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
   try { return evmToLitho(addr); } catch { return addr; }
+}
+
+/** A Send recipient in the form its network uses: litho1… on Lithosphere, 0x
+ *  on any other EVM network (a litho1… is the same account's 0x). A
+ *  name.litho, or a network not known yet, as it is. What's sent doesn't
+ *  change — resolveRecipient takes either form. */
+function addrForChain(addr: string, chainId?: number): string {
+  if (chainId == null || chainId === LITHO_CHAIN_ID) return displayAddr(addr, chainId);
+  if (!/^litho1[0-9a-z]{6,}$/.test(addr)) return addr;
+  try { return lithoToEvm(addr); } catch { return addr; }
 }
 
 /** A short address for a one-line row: the prefix plus a few characters each
@@ -2947,6 +2958,8 @@ function QuanttAgentManageModal({ agentId, summary, onClose, onChanged }: {
   const walletAddress = qWalletAddress(wallet);
   const agentChains = (() => { const o = qAsObj(raw); const arr = o && Array.isArray(o.chains) ? (o.chains as unknown[]).filter((x): x is string => typeof x === 'string') : []; const one = qStr(o, 'chain', 'network') ?? summary?.chain ?? agentWalletNetwork(wallet)?.chain; return arr.length ? arr : one ? [one] : []; })();
   const depositAssets = quanttDepositAssets(agentChains, qStr(qAsObj(raw), 'quoteAsset', 'quote_asset'));
+  // An agent only on Lithosphere shows its address and yours as litho1….
+  const lithoAgent = depositAssets.length > 0 && depositAssets.every((a) => a.chainId === LITHO_CHAIN_ID);
   // Quantts may still run the agent on another network (Lithosphere on Makalu):
   // a deposit sent on Mainnet then wouldn't be credited.
   const depositBlock = (a: QuanttDepositAsset | undefined) =>
@@ -3072,7 +3085,7 @@ function QuanttAgentManageModal({ agentId, summary, onClose, onChanged }: {
           )}
 
           {tab === 'wallet' && (
-            <QuanttWalletTab C={C} wallet={wallet} address={walletAddress} notice={depositAssets.map(depositBlock).find(Boolean) ?? null} onDeposit={() => setShowDeposit(true)} onWithdraw={() => setShowWithdraw(true)}/>
+            <QuanttWalletTab C={C} wallet={wallet} address={walletAddress} litho={lithoAgent} notice={depositAssets.map(depositBlock).find(Boolean) ?? null} onDeposit={() => setShowDeposit(true)} onWithdraw={() => setShowWithdraw(true)}/>
           )}
 
           {tab === 'decisions' && (
@@ -3159,19 +3172,23 @@ function QuanttAgentManageModal({ agentId, summary, onClose, onChanged }: {
       </SafeAreaView>
 
       {showDeposit && <QuanttDepositModal agentId={agentId} agentName={name} address={walletAddress} assets={depositAssets} blockFor={depositBlock} onClose={() => { setShowDeposit(false); reload(); }}/>}
-      {showWithdraw && <QuanttWithdrawModal agentId={agentId} agentName={name} onClose={() => { setShowWithdraw(false); reload(); }}/>}
+      {showWithdraw && <QuanttWithdrawModal agentId={agentId} agentName={name} litho={lithoAgent} onClose={() => { setShowWithdraw(false); reload(); }}/>}
     </Modal>
   );
 }
 
 /** Wallet tab — the agent's OWN deposit address + balances, with the same
  *  copy/QR pattern the app's Receive screen uses. */
-function QuanttWalletTab({ C, wallet, address, notice, onDeposit, onWithdraw }: {
+function QuanttWalletTab({ C, wallet, address: agentAddress, litho, notice, onDeposit, onWithdraw }: {
   C: ReturnType<typeof useColors>; wallet: unknown; address: string | undefined;
+  /** The agent trades only on Lithosphere: its address is shown, copied and
+   *  QR-encoded as litho1…. Another network in the mix keeps 0x. */
+  litho?: boolean;
   /** Why the agent can't be funded yet (agentFundingBlock), if so. */
   notice: string | null;
   onDeposit: () => void; onWithdraw: () => void;
 }) {
+  const address = agentAddress && litho ? displayAddr(agentAddress, LITHO_CHAIN_ID) : agentAddress;
   const [qrSvg, setQrSvg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -3518,7 +3535,7 @@ function styles_quanttInput(C: ReturnType<typeof useColors>) {
  *  existing Send screen via SendNavCtx rather than a new send mechanism.
  *  Leg B just tells Quantts to recognize/credit that transfer; it moves no
  *  funds itself, which is why the two steps are visually separated. */
-function QuanttDepositModal({ agentId, agentName, address, assets, blockFor, onClose }: {
+function QuanttDepositModal({ agentId, agentName, address: agentAddress, assets, blockFor, onClose }: {
   agentId: string; agentName: string; address: string | undefined; assets: QuanttDepositAsset[];
   /** Why an asset can't be deposited yet (agentFundingBlock), or null. */
   blockFor: (a: QuanttDepositAsset | undefined) => string | null;
@@ -3529,6 +3546,9 @@ function QuanttDepositModal({ agentId, agentName, address, assets, blockFor, onC
   const [picked, setAsset] = useState<QuanttDepositAsset | undefined>(undefined);
   const asset = (picked && assets.find((a) => a.sym === picked.sym && a.chain === picked.chain)) ?? assets[0];
   const block = blockFor(asset);
+  // The agent's address in the picked asset's network form: litho1… for a
+  // Lithosphere deposit (QR, copy and the pre-filled Send), 0x elsewhere.
+  const address = agentAddress ? displayAddr(agentAddress, asset?.chainId) : agentAddress;
   const [assetOpen, setAssetOpen] = useState(false);
   const C = useColors();
   const goSend = useSendNav();
@@ -3682,12 +3702,17 @@ const QUANTT_WITHDRAW_ADDR_CACHE_KEY = 'quantt_withdrawal_addr_verified_v1';
  *  binding/re-binding is always available below it regardless. TOTP is
  *  offered unconditionally (submitted empty if the account has none) since
  *  the UI has no way to know in advance whether it's enabled. */
-function QuanttWithdrawModal({ agentId, agentName, onClose }: {
-  agentId: string; agentName: string; onClose: () => void;
+function QuanttWithdrawModal({ agentId, agentName, litho, onClose }: {
+  agentId: string; agentName: string;
+  /** The agent is only on Lithosphere: addresses are shown as litho1… (the
+   *  binding itself still signs and sends the 0x form). */
+  litho?: boolean;
+  onClose: () => void;
 }) {
   const C = useColors();
   const walletAddr = useWalletAddr();
   const seed = useWalletSeed();
+  const shownAddr = (a: string) => (litho ? displayAddr(a, LITHO_CHAIN_ID) : a);
 
   const [boundAddr, setBoundAddr] = useState<string | null | undefined>(undefined); // undefined = still checking
   const [binding, setBinding] = useState(false);
@@ -3781,7 +3806,7 @@ function QuanttWithdrawModal({ agentId, agentName, onClose }: {
             {verified && boundAddr ? (
               <View style={{ backgroundColor: 'rgba(34,197,94,0.1)', borderRadius: 12, padding: 12, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                 <Check size={15} color="#22c55e"/>
-                <HiAddr value={boundAddr} style={{ fontSize: 12, flex: 1 }}/>
+                <HiAddr value={shownAddr(boundAddr)} style={{ fontSize: 12, flex: 1 }}/>
               </View>
             ) : (
               <Text style={{ fontSize: 12, color: C.textMuted, marginBottom: 8, lineHeight: 17 }}>
@@ -3794,7 +3819,7 @@ function QuanttWithdrawModal({ agentId, agentName, onClose }: {
                   verify (a free-text field here was a pure dead-end, not a
                   security issue but a confusing one: matches web/desktop/
                   extension, which only ever bind the fixed active address). */}
-              <Text selectable numberOfLines={1} style={{ color: C.textPrimary, fontSize: 12, fontFamily: MONO }}>{walletAddr}</Text>
+              <Text selectable numberOfLines={1} style={{ color: C.textPrimary, fontSize: 12, fontFamily: MONO }}>{shownAddr(walletAddr)}</Text>
             </View>
             {bindErr && <Text style={{ fontSize: 12, color: '#ef4444', marginTop: 6 }}>{bindErr}</Text>}
             <Pressable
@@ -3856,7 +3881,7 @@ function QuanttWithdrawModal({ agentId, agentName, onClose }: {
 type SendChainOption = 'evm' | 'bitcoin' | 'solana' | 'cosmos';
 
 const CHAIN_META: Record<SendChainOption, { label: string; sym: string; decimals: number; placeholder: string }> = {
-  evm:     { label: 'Lithosphere',  sym: 'LITHO', decimals: 18, placeholder: '0x… / litho1… / name.litho' },
+  evm:     { label: 'Lithosphere',  sym: 'LITHO', decimals: 18, placeholder: 'litho1… / 0x… / name.litho' },
   bitcoin: { label: 'Bitcoin',      sym: 'BTC',   decimals: 8,  placeholder: 'bc1q… / 1… / 3…' },
   solana:  { label: 'Solana',       sym: 'SOL',   decimals: 9,  placeholder: 'Base58 Solana address' },
   cosmos:  { label: 'Cosmos Hub',   sym: 'ATOM',  decimals: 6,  placeholder: 'cosmos1…' },
@@ -4177,6 +4202,16 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
     });
     return () => { cancelled = true; };
   }, [coinChainId]);
+  // The recipient follows the network: on Lithosphere a 0x recipient (typed,
+  // picked or pre-filled) becomes its litho1…, on another EVM network a
+  // litho1… becomes its 0x. Same account — what's sent doesn't change.
+  useEffect(() => {
+    if (coinChainId == null) return;
+    setTo((t) => {
+      const next = addrForChain(t.trim(), coinChainId);
+      return next === t.trim() ? t : next;
+    });
+  }, [coinChainId]);
   // Names of user-added networks, for the FROM picker's network headings.
   const [customNetworkNames, setCustomNetworkNames] = useState<Record<number, string>>({});
   useEffect(() => {
@@ -4466,7 +4501,8 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <TextInput
             style={[styles.input, { flex: 1, backgroundColor: 'transparent', borderWidth: 0, padding: 0, fontSize: 14, fontFamily: MONO }]}
-            placeholder={CHAIN_META[chain].placeholder}
+            /* litho1 first on Lithosphere; another EVM network takes 0x. */
+            placeholder={coinChainId != null && coinChainId !== LITHO_CHAIN_ID ? '0x… / name.litho' : CHAIN_META[chain].placeholder}
             placeholderTextColor={C.textMuted}
             value={to}
             onChangeText={setTo}
@@ -4684,7 +4720,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
               Send {shownAmt} {reviewSym}
             </Text>
             <Text style={{ color: C.textSecondary, fontSize: 15, lineHeight: 22, marginTop: 4 }}>
-              To: {chain === 'evm' ? displayAddr(to.trim(), coinChainId) : to}
+              To: {chain === 'evm' ? addrForChain(to.trim(), coinChainId) : to}
             </Text>
             {hexBytes > 0 && (
               <Text style={{ color: C.textSecondary, fontSize: 15, lineHeight: 22, marginTop: 2 }}>
@@ -4842,7 +4878,7 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
     [hiddenNetworks],
   );
   // litho1 is the SAME keypair's bech32 form — Lithosphere Mainnet accepts
-  // it, so it gets the litho1/EVM toggle here.
+  // it, so it shows litho1 here, with a small link to the EVM form.
   const isLitho = chain === 'lithosphere-mainnet';
 
   // Derive the Lithosphere bech32 form from the same 0x keypair — one
@@ -5058,41 +5094,6 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
           </Text>
         )}
 
-        {/* Litho1 / EVM toggle — same wallet, two address formats; litho1
-            decodes to the same 0x address. litho1 is the default; the 0x
-            form is the secondary option. */}
-        {isLitho && !!lithoAddr && (
-          <View style={{
-            flexDirection: 'row', alignSelf: 'center',
-            backgroundColor: C.bgElevated,
-            borderWidth: 1, borderColor: C.borderDefault,
-            borderRadius: 999, padding: 3, marginTop: 12,
-          }}>
-            {[
-              { isAlt: false, label: 'Litho1'      },
-              { isAlt: true,  label: 'EVM address' },
-            ].map(o => {
-              const selected = o.isAlt === showAlt;
-              return (
-                <Pressable
-                  key={o.label}
-                  onPress={() => setShowAlt(o.isAlt)}
-                  style={{
-                    backgroundColor: selected ? C.bgCard : 'transparent',
-                    borderRadius: 999,
-                    paddingHorizontal: 16, paddingVertical: 6,
-                  }}
-                >
-                  <Text style={{
-                    fontSize: 12, fontWeight: '600',
-                    color: selected ? C.textPrimary : C.textSecondary,
-                  }}>{o.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
-
         {/* QR with brand corners */}
         <View style={styles.qrFrame}>
           <View style={styles.qrCornerTL}/>
@@ -5126,6 +5127,22 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
             <Text style={styles.btnSecondaryText}>Share</Text>
           </Pressable>
         </View>
+
+        {/* litho1 is the address (QR, copy, share). The 0x form of the same
+            address is a small secondary link — for an app or exchange that
+            only takes 0x — never a toggle of equal weight. */}
+        {isLitho && !!lithoAddr && (
+          <Pressable onPress={() => setShowAlt((v) => !v)} hitSlop={8} accessibilityRole="button" style={{ alignSelf: 'center' }}>
+            <Text style={{ color: C.textMuted, fontSize: 12, fontWeight: '600', textAlign: 'center' }}>
+              {showAlt ? 'Show litho1 address' : 'Show EVM address (0x)'}
+            </Text>
+            {showAlt && (
+              <Text style={{ color: C.textMuted, fontSize: 11, textAlign: 'center', marginTop: 2 }}>
+                Same account — only for apps that don&apos;t take litho1.
+              </Text>
+            )}
+          </Pressable>
+        )}
 
         <View style={styles.warningCard}>
           <Text style={styles.warningCardText}>
@@ -5632,7 +5649,9 @@ function MobileCrossChainSwap({ bridge }: { bridge: boolean }) {
       </View>
       {recipientOn && (
         <TextInput style={[styles.input, { color: C.textPrimary }]} value={recipient} onChangeText={setRecipient} autoCapitalize="none" autoCorrect={false}
-          placeholder={walletAddr ? `${walletAddr.slice(0, 10)}… (your wallet)` : '0x… recipient'} placeholderTextColor={C.textMuted}/>
+          placeholder={toChain.id === 'lithosphere'
+            ? (walletAddr ? `${displayAddr(walletAddr, LITHO_CHAIN_ID).slice(0, 14)}… (your wallet)` : 'litho1… / 0x… recipient')
+            : (walletAddr ? `${walletAddr.slice(0, 10)}… (your wallet)` : '0x… recipient')} placeholderTextColor={C.textMuted}/>
       )}
 
       <Text style={{ color: C.textMuted, fontSize: 11, lineHeight: 16, marginTop: 4 }}>
@@ -6463,6 +6482,7 @@ function SettingsScreen() {
   const [bioReady, setBioReady] = useState(false);
   const [bioOn, setBioOn]       = useState(false);
   const [copiedFmt, setCopiedFmt] = useState<'litho' | 'evm' | null>(null);
+  const [showEvmAddr, setShowEvmAddr] = useState(false);
   const openRenameAcct = useRenameAccount();
   const [wcOpen, setWcOpen]     = useState(false);
   const [notifOn, setNotifOn]   = useState(false);
@@ -6525,7 +6545,8 @@ function SettingsScreen() {
     await refreshBio();
   };
 
-  // One keypair, two encodings: litho1 (Lithosphere-native, shown first) and 0x.
+  // One keypair, two encodings: litho1 (the wallet's address) and 0x (its
+  // secondary "EVM address").
   const lithoAddr = useMemo(() => {
     try { return walletAddr ? evmToLitho(walletAddr) : ''; } catch { return ''; }
   }, [walletAddr]);
@@ -6646,8 +6667,9 @@ function SettingsScreen() {
         <Text style={styles.setHeroSub}>Manage your wallet preferences, security, and account details.</Text>
       </View>
 
-      {/* Account header card — litho1 (Lithosphere-native) leads, 0x follows.
-          Same keypair, two encodings; each row copies its own format. */}
+      {/* Account header card — litho1 is the wallet's address. The 0x form of
+          the same key is a smaller, muted "EVM address" behind a link
+          (client 2026-10-15: litho1 is the standard). Each copies its own. */}
       <View style={styles.acctHeaderCard}>
         <Image
           source={require('./assets/images/Thanos_Logo_Transparent.png')}
@@ -6668,22 +6690,36 @@ function SettingsScreen() {
               <Pencil size={14} color={C.textMuted} strokeWidth={2.2}/>
             </Pressable>
           </View>
-          {!!lithoAddr && (
-            <Pressable style={styles.addrRow} onPress={() => copyAddrFmt('litho')} hitSlop={6}>
-              <Text style={styles.addrFmtTag}>LITHO</Text>
+          {lithoAddr ? (
+            <>
+              <Pressable style={styles.addrRow} onPress={() => copyAddrFmt('litho')} hitSlop={6} accessibilityLabel="Copy address">
+                <Text style={[styles.acctHeaderAddr, styles.addrRowText, styles.acctHeaderAddrMain]} numberOfLines={1} ellipsizeMode="middle">
+                  {lithoAddr}
+                </Text>
+                <Text style={styles.addrCopyMini}>{copiedFmt === 'litho' ? '✓' : 'Copy'}</Text>
+              </Pressable>
+              {showEvmAddr ? (
+                <Pressable style={styles.addrRow} onPress={() => copyAddrFmt('evm')} hitSlop={6} accessibilityLabel="Copy EVM address">
+                  <Text style={styles.addrEvmLabel}>EVM address</Text>
+                  <Text style={[styles.addrEvmText, styles.addrRowText]} numberOfLines={1} ellipsizeMode="middle">
+                    {walletAddr}
+                  </Text>
+                  <Text style={styles.addrEvmLabel}>{copiedFmt === 'evm' ? '✓' : 'Copy'}</Text>
+                </Pressable>
+              ) : (
+                <Pressable onPress={() => setShowEvmAddr(true)} hitSlop={6} accessibilityRole="button" style={{ marginTop: 4, alignSelf: 'flex-start' }}>
+                  <Text style={styles.addrEvmLabel}>Show EVM address</Text>
+                </Pressable>
+              )}
+            </>
+          ) : (
+            <Pressable style={styles.addrRow} onPress={() => copyAddrFmt('evm')} hitSlop={6}>
               <Text style={[styles.acctHeaderAddr, styles.addrRowText]} numberOfLines={1} ellipsizeMode="middle">
-                {lithoAddr}
+                {walletAddr || '—'}
               </Text>
-              <Text style={styles.addrCopyMini}>{copiedFmt === 'litho' ? '✓' : 'Copy'}</Text>
+              <Text style={styles.addrCopyMini}>{copiedFmt === 'evm' ? '✓' : 'Copy'}</Text>
             </Pressable>
           )}
-          <Pressable style={styles.addrRow} onPress={() => copyAddrFmt('evm')} hitSlop={6}>
-            <Text style={styles.addrFmtTag}>EVM</Text>
-            <Text style={[styles.acctHeaderAddr, styles.addrRowText]} numberOfLines={1} ellipsizeMode="middle">
-              {walletAddr || '—'}
-            </Text>
-            <Text style={styles.addrCopyMini}>{copiedFmt === 'evm' ? '✓' : 'Copy'}</Text>
-          </Pressable>
         </View>
       </View>
 
@@ -6937,7 +6973,7 @@ function AddressBookModal({ visible, onClose }: { visible: boolean; onClose: () 
         />
         <TextInput
           style={[styles.input, { color: C.textPrimary, fontFamily: address ? 'Menlo' : undefined, fontSize: address ? 12 : 14 }]}
-          placeholder="0x… or litho1…"
+          placeholder="litho1… or 0x…"
           placeholderTextColor={C.textMuted}
           value={address}
           onChangeText={setAddress}
@@ -6966,8 +7002,10 @@ function AddressBookModal({ visible, onClose }: { visible: boolean; onClose: () 
                     {c.name}
                     {c.pendingSync && <Text style={{ color: C.textMuted, fontSize: 11 }}>  · not synced</Text>}
                   </Text>
+                  {/* As litho1… — the same account as a saved 0x (stored as
+                      it was saved; only the display changes). */}
                   <Text numberOfLines={1} ellipsizeMode="middle" style={{ color: C.textMuted, fontSize: 11, fontFamily: MONO }}>
-                    {c.evm}
+                    {c.litho ?? displayAddr(c.evm, LITHO_CHAIN_ID)}
                   </Text>
                 </View>
                 <Pressable onPress={() => onDelete(c.id)} style={{ padding: 6 }}>
@@ -7488,7 +7526,7 @@ function DnnsModal({ visible, onClose, ownerAddr }: { visible: boolean; onClose:
       />
       {avail.status === 'checking'  && <Text style={{ fontSize: 11, color: C.textMuted }}>Checking availability…</Text>}
       {avail.status === 'available' && <Text style={{ fontSize: 11, color: C.green }}>✓ Available</Text>}
-      {avail.status === 'taken'     && <Text style={{ fontSize: 11, color: C.yellow }} numberOfLines={1}>Taken — owned by {avail.address.slice(0, 10)}…</Text>}
+      {avail.status === 'taken'     && <Text style={{ fontSize: 11, color: C.yellow }} numberOfLines={1}>Taken — owned by {shortRowAddr(displayAddr(avail.address, LITHO_CHAIN_ID))}</Text>}
       {avail.status === 'error'     && name.trim().length > 0 && <Text style={{ fontSize: 11, color: C.textMuted }}>Couldn’t check — try again.</Text>}
 
       <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1, color: C.textMuted }}>YEARS</Text>
@@ -10159,10 +10197,9 @@ function App() {
 
                   {(isPrivateKeyWallet(walletSeed) ? [0] : visibleAccounts).map((i) => {
                     const a = accountAddresses[i];
-                    const tag = a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '';
-                    // litho1 leads, 0x follows — same key, both encodings visible.
-                    let lithoShort = '';
-                    try { lithoShort = a ? `${evmToLitho(a).slice(0, 9)}…${evmToLitho(a).slice(-4)}` : ''; } catch {}
+                    // The account's litho1 address (its 0x is in Settings and
+                    // Receive, as the secondary "EVM address").
+                    const tag = a ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : '';
                     const active = i === (isPrivateKeyWallet(walletSeed) ? 0 : activeIdx);
                     return (
                       <Pressable
@@ -10180,9 +10217,9 @@ function App() {
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{getAccountName(i)}</Text>
-                          {(lithoShort || tag) ? (
+                          {tag ? (
                             <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>
-                              {lithoShort ? `${lithoShort} · ${tag}` : tag}
+                              {tag}
                             </Text>
                           ) : null}
                         </View>
@@ -11072,7 +11109,10 @@ function makeStyles(C: Colors) {
     acctHeaderAddr: { color: C.textMuted, fontSize: 11, fontFamily: MONO, marginTop: 2 },
     addrRow:        { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
     addrRowText:    { flex: 1, marginTop: 0 },
-    addrFmtTag:     { color: C.textMuted, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.6, borderWidth: 1, borderColor: C.borderSubtle, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: 'hidden' },
+    // The account's litho1 address leads; its 0x "EVM address" is smaller + muted.
+    acctHeaderAddrMain: { color: C.textSecondary, fontSize: 12 },
+    addrEvmLabel:   { color: C.textMuted, fontSize: 10, fontWeight: '600' },
+    addrEvmText:    { color: C.textMuted, fontSize: 10, fontFamily: MONO },
     addrCopyMini:   { color: C.blue, fontSize: 11, fontWeight: '700' },
     copyChip: {
       paddingHorizontal: 12, paddingVertical: 6,

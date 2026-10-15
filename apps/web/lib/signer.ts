@@ -187,7 +187,7 @@ function lithoProviderFor(chainId: number): Provider {
 
 /**
  * Native LITHO transfer on Kamet (900523) — the chain-aware main-thread path.
- * Recipient may be 0x or litho1.
+ * Recipient may be litho1 or 0x.
  */
 export async function sendLithoNative(
   walletInput: WalletInput,
@@ -195,7 +195,7 @@ export async function sendLithoNative(
 ): Promise<SendResult> {
   const provider = lithoProviderFor(input.chainId);
   const to = resolveToEvm(input.recipient.trim());
-  if (!to) throw new SendError('invalid_address', 'Recipient is not a valid 0x or litho1 address');
+  if (!to) throw new SendError('invalid_address', 'Recipient is not a valid litho1… or 0x… address');
 
   let weiAmount: bigint;
   try { weiAmount = parseUnits(input.amount, 18); }

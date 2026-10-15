@@ -5,7 +5,7 @@
  * (multx-thanos.ts). */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  bridgeErrorMessage, bridgeTransferLabel, formatBridgeAmount, parseBridgeAmount,
+  bridgeErrorMessage, bridgeTransferLabel, formatBridgeAmount, parseBridgeAmount, evmToLitho,
   type MultXBridgeOption, type MultXBridgeStep, type MultXBridgeTransfer,
 } from '@thanos/sdk-core';
 import { Wallet } from 'ethers';
@@ -155,6 +155,13 @@ export function MultXBridgePanel({ seed }: { seed: string[] }) {
   const from = src !== null ? multxChain(src) : null;
   const to = dst !== null ? multxChain(dst) : null;
   const outcome = current && !busy ? bridgeTransferLabel(current) : null;
+  // Arriving on Lithosphere Mainnet: the address as litho1…, the form it goes
+  // by there (litho1 + 4 like 0x + 4); other networks 0x.
+  const arriveAt = (() => {
+    if (!address) return '';
+    if (dst === 9005) { try { const l = evmToLitho(address); return `${l.slice(0, 10)}…${l.slice(-4)}`; } catch { /* fall through */ } }
+    return `${address.slice(0, 6)}…${address.slice(-4)}`;
+  })();
 
   return (
     <>
@@ -192,7 +199,7 @@ export function MultXBridgePanel({ seed }: { seed: string[] }) {
       {option && from && to && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.5 }}>
           Arrives at <strong style={{ color: 'var(--text-secondary)' }}>your address on {to.name}</strong>
-          {address ? <> ({address.slice(0, 6)}…{address.slice(-4)})</> : null}. The network fee is paid
+          {arriveAt ? <> ({arriveAt})</> : null}. The network fee is paid
           in {from.nativeSymbol} on {from.name}{base ? '; the first transfer of a token also needs an approval' : ''}.
         </div>
       )}

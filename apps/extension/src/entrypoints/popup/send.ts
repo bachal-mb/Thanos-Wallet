@@ -1,7 +1,7 @@
 /**
  * Transaction send for the extension popup.
  *
- * Resolves a recipient (0x / litho1 / name.litho) to a 0x address, then
+ * Resolves a recipient (litho1 / 0x / name.litho) to a 0x address, then
  * signs + broadcasts a native or ERC-20/LEP100 transfer on the asset's own
  * EVM chain (Lithosphere Mainnet, Ethereum, … or a custom network).
  * Reuses sdk-core's litho1 decoder and failover RPC provider.
@@ -52,7 +52,7 @@ export async function resolveRecipient(input: string): Promise<string> {
   if (/^0x[0-9a-fA-F]{40}$/.test(s)) return getAddress(s);
   if (/^litho1[0-9a-z]+$/i.test(s)) return lithoToEvm(s);
   if (/^[a-z0-9-]+\.litho$/i.test(s)) return resolveDnnsName(s);
-  throw new Error('Enter a 0x…, litho1…, or name.litho address');
+  throw new Error('Enter a litho1…, 0x… or name.litho address');
 }
 
 /* ─── Send ───────────────────────────────────────────────────────────── */

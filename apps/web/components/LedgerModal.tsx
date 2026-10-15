@@ -23,6 +23,7 @@ import {
   getActiveLedgerSolAccount, setActiveLedgerSolAccount,
 } from '../lib/ledger-accounts';
 import { closeLedgerTransport } from '../lib/ledger-transport';
+import { toLithoForm, shortAddress } from '../lib/address';
 import { Wallet as WalletIcon } from 'lucide-react';
 
 const STORAGE_KEY = 'thanos.ledger_account';
@@ -172,9 +173,16 @@ export function LedgerModal({ onClose }: { onClose: () => void }) {
                 CONNECTED · {tab.label.toUpperCase()}
               </div>
               <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>Ledger · m/{active.path}</div>
+              {/* The EVM-app account by its litho1… address; the 0x form
+                  (what the device shows) smaller, underneath. */}
               <div style={{ fontSize: 11, fontFamily: 'Geist Mono, monospace', color: 'var(--text-muted)', marginTop: 4, wordBreak: 'break-all' }}>
-                {active.address}
+                {coin === 'eth' ? toLithoForm(active.address) : active.address}
               </div>
+              {coin === 'eth' && (
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, opacity: 0.8 }}>
+                  EVM address <span style={{ fontFamily: 'Geist Mono, monospace' }}>{shortAddress(active.address)}</span>
+                </div>
+              )}
               <button className="btn-outline" style={{ width: '100%', marginTop: 10 }} onClick={onDisconnect}>
                 Disconnect
               </button>
@@ -255,9 +263,11 @@ export function LedgerModal({ onClose }: { onClose: () => void }) {
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 11, fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {acc.address}
+                        {coin === 'eth' ? toLithoForm(acc.address) : acc.address}
                       </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>m/{acc.path}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                        m/{acc.path}{coin === 'eth' ? ` · EVM ${shortAddress(acc.address)}` : ''}
+                      </div>
                     </div>
                   </button>
                 ))}

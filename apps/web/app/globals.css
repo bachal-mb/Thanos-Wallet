@@ -659,10 +659,18 @@ button:focus:not(:focus-visible),
   border-radius: 4px;
   font-family: 'Geist Mono', monospace;
 }
-.addr-row-active {
-  color: var(--blue);
-  font-size: 10px;
+/* The 0x "EVM address" row — secondary to litho1: tighter, smaller, muted. */
+.addr-row-secondary { padding: 4px 10px 6px; }
+.addr-row-secondary .addr-row-tag {
+  font-size: 9px; letter-spacing: 0.04em; font-weight: 600;
+  padding: 0; background: none; border: none;
+  font-family: inherit;
 }
+.addr-row-secondary .addr-row-value {
+  font-size: 11px; font-weight: 400;
+  color: var(--text-muted);
+}
+.addr-row-secondary .addr-row-copy { width: 22px; height: 22px; }
 .addr-row-value {
   font-family: 'Geist Mono', monospace;
   font-size: 12px;

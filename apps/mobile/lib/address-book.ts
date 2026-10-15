@@ -10,7 +10,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAddress } from 'ethers';
-import { evmToLitho } from './address';
+import { evmToLitho, lithoToEvm } from './address';
 import { apiClient } from './auth-client';
 import type { ContactDto } from './api-client';
 import { encryptField, decryptField } from './contact-crypto';
@@ -34,6 +34,19 @@ type Listener = () => void;
 const _listeners: Set<Listener> = new Set();
 
 function notify() { for (const l of _listeners) { try { l(); } catch { /* no-op */ } } }
+
+/** A contact address typed as litho1… or 0x — the same account either way:
+ *  kept (and synced) under its checksummed 0x form, which every client's
+ *  contact sync reads, with its litho1… form alongside — the form it's
+ *  shown in. Anything else (a non-EVM row the server may hold) is kept as
+ *  it is, with no litho1… form. */
+function addressForms(input: string): { evm: string; litho?: string } {
+  const s = input.trim();
+  try {
+    const evm = /^litho1/i.test(s) ? lithoToEvm(s.toLowerCase()) : getAddress(s);
+    return { evm, litho: evmToLitho(evm) };
+  } catch { return { evm: s }; }
+}
 
 function newId(): string {
   const b = new Uint8Array(16);
@@ -62,14 +75,13 @@ function persist(list: Contact[]) {
 }
 
 async function contactFromDto(d: ContactDto): Promise<Contact> {
-  let evm = d.address;
-  try { evm = getAddress(d.address); } catch { /* non-EVM — keep raw */ }
+  const { evm, litho } = addressForms(d.address);
   const [name, note] = await Promise.all([decryptField(d.name), decryptField(d.notes)]);
   return {
     id:        d.id,
     name:      name ?? d.name,
     evm,
-    litho:     evmToLitho(evm) || undefined,
+    litho,
     note:      note ?? undefined,
     updatedAt: new Date(d.updatedAt).getTime(),
   };
@@ -84,10 +96,12 @@ export async function addContact(input: { name: string; address: string; note?: 
   const trimmedName = input.name.trim();
   if (!trimmedName) throw new Error('Name required');
 
-  let evm = input.address.trim();
-  try { evm = getAddress(evm); } catch { /* not EVM — accept raw */ }
+  // litho1… or 0x — a litho1… and the 0x of one account are one contact.
+  // (Anything else used to fail deep in evmToLitho with "Invalid EVM address".)
+  const { evm, litho } = addressForms(input.address);
+  if (!litho) throw new Error('Enter a litho1… or 0x… address');
 
-  if (_cache.some(c => c.evm === evm)) throw new Error('Address already in your contacts');
+  if (_cache.some(c => c.evm.toLowerCase() === evm.toLowerCase())) throw new Error('Address already in your contacts');
 
   if (await isAuthed()) {
     const [encName, encNote] = await Promise.all([
@@ -109,7 +123,7 @@ export async function addContact(input: { name: string; address: string; note?: 
     id:          newId(),
     name:        trimmedName,
     evm,
-    litho:       evmToLitho(evm) || undefined,
+    litho,
     note:        input.note?.trim() || undefined,
     updatedAt:   Date.now(),
     pendingSync: true,
@@ -160,7 +174,7 @@ export async function syncContactsFromServer(): Promise<{ synced: number; pushed
 
 export function findContactByAddress(address: string): Contact | null {
   if (!address) return null;
-  const target = address.toLowerCase();
+  const target = addressForms(address).evm.toLowerCase();   // 0x or litho1…
   return _cache.find(c => c.evm.toLowerCase() === target) ?? null;
 }
 

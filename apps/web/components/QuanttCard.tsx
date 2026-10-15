@@ -32,6 +32,7 @@ import {
 import { quantt, quanttSignIn, quanttBindWithdrawalAddress } from '../lib/quantt';
 import { useWallet } from './shell/AppShell';
 import { SendModal } from './modals';
+import { displayAddress } from '../lib/address';
 import {
   toAgentConfig, agentFundingOptions, agentFundingBlock, diffAgentConfig, validateAgentUpdate, killSwitchMessage, QUANTT_TIMEFRAMES, withdrawalResumable,
   type QuanttFundingOption, type QuanttSession, type QuanttOverview, type QuanttAgent, type QuanttRuntimeState,
@@ -340,9 +341,12 @@ function WalletTab({ agent, funding, onSendClick }: {
     return () => { live = false; };
   }, [agent.id]);
 
+  // The agent's wallet as the funding network writes it — litho1… on
+  // Lithosphere Mainnet (Send resolves it to 0x), 0x elsewhere.
+  const shownAddress = wallet?.address ? displayAddress(wallet.address, fund?.chainId) : '';
   const copy = () => {
-    if (!wallet?.address) return;
-    navigator.clipboard?.writeText(wallet.address).catch(() => {});
+    if (!shownAddress) return;
+    navigator.clipboard?.writeText(shownAddress).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -369,7 +373,7 @@ function WalletTab({ agent, funding, onSendClick }: {
         <div className="field-label">Agent wallet address</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-elevated)', borderRadius: 10, padding: '10px 12px' }}>
           <span style={{ color: 'var(--text-primary)', fontSize: 12.5, fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-            {wallet.address}
+            {shownAddress}
           </span>
           <button onClick={copy} aria-label="Copy address" style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? '#22c55e' : 'var(--text-muted)', flexShrink: 0 }}>
             {copied ? <CheckIcon size={15}/> : <Copy size={15}/>}

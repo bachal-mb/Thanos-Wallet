@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { HDNodeWallet, Mnemonic, Wallet, JsonRpcProvider, formatEther } from 'ethers';
+import { HDNodeWallet, Mnemonic, Wallet, JsonRpcProvider, formatEther, getAddress } from 'ethers';
 import './styles.css';
 import {
   createVault, openVault, openVaultWithKey,
@@ -40,7 +40,7 @@ import { addLocalActivity } from './local-activity';
 import { MultXBridgePanel } from './MultXBridgePanel';
 import { MULTX_CONFIG } from './multx-thanos';
 import {
-  evmToLitho, preferredAddressFormat, DUAL_ADDRESS_CHAIN_IDS,
+  evmToLitho, lithoToEvm, preferredAddressFormat, DUAL_ADDRESS_CHAIN_IDS,
   ECOSYSTEM_APPS, ECOSYSTEM_HUB, type EcosystemApp,
   groupBySection, looksLikeUrl, normalizeUrl,
   fetchPortfolioHistory, type Holding, type PortfolioHistory, type Range,
@@ -58,7 +58,7 @@ import { connectLedger, type LedgerConnection } from './ledger-sign';
 import { connectTrezor, type TrezorConnection } from './trezor-sign';
 import {
   loadContacts, addContact, deleteContact,
-  syncContactsFromServer, onContactsChanged,
+  syncContactsFromServer, onContactsChanged, contactLitho, contactEvm,
   type Contact as AbContact,
 } from './address-book';
 import { setContactEncryptionKey } from './contact-crypto';
@@ -232,6 +232,26 @@ const LITHO_MAINNET = 9005;
 function lithoDisplayAddr(a: string, chainId: number | undefined): string {
   if (chainId !== LITHO_MAINNET || !/^0x[0-9a-fA-F]{40}$/.test(a)) return a;
   try { return evmToLitho(a); } catch { return a; }
+}
+/** A 0x… or litho1… account in its 0x form (EIP-55) — the same account
+ *  either way. null for anything else (name.litho, a partial entry). */
+function accountEvm(a: string): string | null {
+  const v = (a || '').trim();
+  try {
+    if (/^0x[0-9a-fA-F]{40}$/.test(v)) return getAddress(v.toLowerCase());
+    if (/^litho1[0-9a-z]+$/i.test(v)) return lithoToEvm(v.toLowerCase());
+  } catch { /* not a valid address */ }
+  return null;
+}
+/** A recipient in the form its EVM network goes by: litho1… on Lithosphere,
+ *  0x… on every other network. Same account, so what's sent doesn't change
+ *  (resolveRecipient takes either); anything else is left as typed. */
+function recipientForNetwork(a: string, chainId: number | undefined): string {
+  const evm = accountEvm(a);
+  if (!evm) return a;
+  const typedLitho = /^litho1/i.test(a.trim());
+  if (chainId === LITHO_MAINNET) return typedLitho ? a : lithoDisplayAddr(evm, chainId);
+  return typedLitho ? evm : a;
 }
 /** 0x123456…abcdef — litho1 keeps as many characters past its prefix. */
 function shortAddress(a: string): string {
@@ -1008,19 +1028,22 @@ function QuanttWalletTab({ agentId, wallet, funding, onOpenSend }: {
   const [qr, setQr] = useState('');
   const [copied, setCopied] = useState(false);
   const address = qWalletAddress(wallet);
+  // Funding on Lithosphere: the agent's address as litho1… (shown, encoded
+  // and copied); Quantt's 0x is the small "EVM address" line. Other networks 0x.
+  const shown = address ? lithoDisplayAddr(address, fund?.chainId) : '';
   const balances = qWalletBalances(wallet);
   const extra = quanttExtraDetailEntries({ id: agentId, name: '' }, wallet,
     ['address', 'walletAddress', 'wallet_address', 'balance', 'balances', 'assets', 'tokens', 'balanceUsd', 'usdBalance', 'currency', 'symbol', 'asset']);
 
   useEffect(() => {
-    if (!address) { setQr(''); return; }
+    if (!shown) { setQr(''); return; }
     let cancelled = false;
-    void import('qrcode').then(m => m.toDataURL(address, { width: 200, margin: 1 }))
+    void import('qrcode').then(m => m.toDataURL(shown, { width: 200, margin: 1 }))
       .then(url => { if (!cancelled) setQr(url); }).catch(() => { if (!cancelled) setQr(''); });
     return () => { cancelled = true; };
-  }, [address]);
+  }, [shown]);
 
-  const copy = () => { if (!address) return; void copyText(address); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copy = () => { if (!shown) return; void copyText(shown); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
   if (!wallet) return <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: '16px 0' }}>Loading wallet…</div>;
   if (!address) return <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: '16px 0' }}>Couldn&apos;t read this agent&apos;s wallet address.</div>;
@@ -1028,9 +1051,10 @@ function QuanttWalletTab({ agentId, wallet, funding, onOpenSend }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 10 }}>
       <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 200, height: 200, background: '#fff', borderRadius: 10 }}>
-        {qr ? <img src={qr} alt={address} width={200} height={200}/> : <span style={{ fontSize: 12, color: '#666' }}>Generating QR…</span>}
+        {qr ? <img src={qr} alt={shown} width={200} height={200}/> : <span style={{ fontSize: 12, color: '#666' }}>Generating QR…</span>}
       </div>
-      <div className="addr-box" style={{ fontSize: 10 }}><HiAddr value={address} full/></div>
+      <div className="addr-box" style={{ fontSize: 10 }}><HiAddr value={shown} full/></div>
+      {shown !== address && <AddrFormatRow label="EVM address" value={address} secondary/>}
       <button className="btn-outline" onClick={copy}>{copied ? '✓ Copied!' : 'Copy address'}</button>
 
       {balances.length > 0 && (
@@ -1268,7 +1292,8 @@ function QuanttDepositTab({ agentId, agentName, wallet, funding, onOpenSend }: {
         </div>
         {address ? (
           <>
-            <div className="addr-box" style={{ fontSize: 10, marginBottom: 10 }}><HiAddr value={address} full/></div>
+            {/* litho1… when funding on Lithosphere (Send opens with it too). */}
+            <div className="addr-box" style={{ fontSize: 10, marginBottom: 10 }}><HiAddr value={lithoDisplayAddr(address, fund?.chainId)} full/></div>
             <div style={{ marginBottom: 10 }}><QuanttFundTarget funding={funding} pick={pick} onPick={setPick} block={block}/></div>
             <button className="btn-primary" onClick={() => onOpenSend?.(address, fund?.sym ?? 'USDC', fund?.chainId)} disabled={!onOpenSend || !funding || !!block}>
               Send to this address
@@ -3616,7 +3641,12 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
   const network = networkById(networkId);
   const chain = network.kind;            // broad chain kind drives all existing routing/signer logic
   const [selectedSym, setSelectedSym] = useState(initialCoin ?? '');
-  const [to, setTo] = useState(initialTo ?? '');
+  // A pre-filled recipient opens in its network's form — litho1… on
+  // Lithosphere (Quantt hands over 0x).
+  const [to, setTo] = useState(() => initialTo && network.kind === 'evm' ? recipientForNetwork(initialTo, network.chainId) : (initialTo ?? ''));
+  // The recipient as 0x — litho1… and 0x… alike — for the scam check and the
+  // simulator, which take 0x. Null until it's a whole 0x/litho1 address.
+  const toEvm = chain === 'evm' ? accountEvm(to) : null;
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
   const [sending, setSending] = useState(false);
@@ -3687,7 +3717,7 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
     // Simulated on the asset's own chain — the one the send is signed on.
     // Chains the simulator doesn't know throw and simply show no report.
     if (chain !== 'evm' || !coin?.chainId || !to.trim() || amtNum <= 0 || overBalance) { setSimReport(null); return; }
-    const toAddr   = to.trim();
+    const toAddr   = accountEvm(to) ?? to.trim(); // the simulator reads 0x
     const fromAddr = hwAddress || '';
     const amt      = amount;
     const sym      = coin.sym;
@@ -3887,7 +3917,14 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
         <CoinSelect
           items={getDesktopNetworks().map(n => ({ value: n.id, sym: n.iconSym, color: n.color, label: n.label }))}
           value={networkId}
-          onChange={(id) => { setNetworkId(id); setSelectedSym(''); setTo(''); setAmount(''); setMemo(''); }}
+          onChange={(id) => {
+            // Between EVM networks the recipient stays — it's the same account
+            // on each — in the new network's form: litho1… on Lithosphere, 0x…
+            // elsewhere (what's sent is unchanged). Any other switch clears it.
+            const next = networkById(id);
+            setTo(t => chain === 'evm' && next.kind === 'evm' ? recipientForNetwork(t, next.chainId) : '');
+            setNetworkId(id); setSelectedSym(''); setAmount(''); setMemo('');
+          }}
           placeholder="Select network"
         />
 
@@ -3909,11 +3946,18 @@ function SendModal({ onClose, initialChain, initialChainId, initialCoin, address
 
         <label className="field-label" style={{ marginTop: 14 }}>Recipient address</label>
         <input className="field-input" placeholder={network.chainId === LITHO_MAINNET ? 'litho1… , 0x… or name.litho' : DESKTOP_CHAIN_META[chain].placeholder} value={to} onChange={e => setTo(e.target.value)}/>
-        {chain === 'evm' && /^0x[0-9a-fA-F]{40}$/.test(to.trim()) && checkRecipient(to.trim()) && (
-          <div role="alert" style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4, fontWeight: 600 }}>{checkRecipient(to.trim())}</div>
+        {toEvm && checkRecipient(toEvm) && (
+          <div role="alert" style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4, fontWeight: 600 }}>{checkRecipient(toEvm)}</div>
+        )}
+        {/* A 0x… typed or pasted on Lithosphere: confirm the account by its
+            litho1… address, the form Lithosphere goes by. */}
+        {toEvm && network.chainId === LITHO_MAINNET && /^0x/i.test(to.trim()) && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Lithosphere address <HiAddr value={lithoDisplayAddr(toEvm, LITHO_MAINNET)} head={8} tail={6}/>
+          </div>
         )}
         {chain === 'evm' && <OwnAccountPicker seed={seed} current={address ?? ''} to={to} chainId={network.chainId} onPick={setTo}/>}
-        {!!initialTo && to === initialTo && (
+        {!!initialTo && (accountEvm(to) ?? to) === (accountEvm(initialTo) ?? initialTo) && (
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
             Pre-filled — Quantt agent deposit address.
           </div>
@@ -4187,41 +4231,8 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
           />
         </div>
 
-        {/* Lithosphere dual-format toggle — switches which format the QR
-            encodes. Only for genuine Lithosphere chains, not external EVM
-            chains (see isDualAddressNetwork). Both formats are ALSO always
-            shown as separate copyable rows below (client: "need to show
-            both litho1 and 0x formats") — this toggle just picks the QR. */}
-        {chain === 'evm' && lithoAddr && isDualAddressNetwork && (
-          <div style={{
-            display: 'inline-flex',
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-default)',
-            borderRadius: 999, padding: 3, marginBottom: 12,
-          }}>
-            {[
-              { isAlt: true,  label: 'Litho1'      },
-              { isAlt: false, label: 'EVM address' },
-            ].map(o => {
-              const selected = o.isAlt === showAlt;
-              return (
-                <button
-                  key={o.label}
-                  onClick={() => setShowAlt(o.isAlt)}
-                  style={{
-                    background: selected ? 'var(--bg-card)' : 'transparent',
-                    border: 'none', cursor: 'pointer',
-                    padding: '5px 14px', borderRadius: 999,
-                    fontSize: 11, fontWeight: 600,
-                    color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  }}
-                >QR: {o.label}</button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Real QR encoding the displayed address. */}
+        {/* Real QR encoding the displayed address — litho1… on Lithosphere
+            chains; the EVM address only via the small link below. */}
         <div className="qr-box" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 220, height: 220, background: '#fff', borderRadius: 10 }}>
           {qrDataUrl
             ? <img src={qrDataUrl} alt={addr} width={220} height={220}/>
@@ -4232,30 +4243,40 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
           <TokenAvatar sym={network.iconSym} color={network.color} className="coin-select-avatar" style={{ width: 18, height: 18, fontSize: 8 }} label={network.iconSym.slice(0, 1)} />
           {network.label}
         </div>
-        <div style={{ fontSize: 10, color: network.color, fontWeight: 600, marginBottom: 8 }}>● {chain === 'evm' ? (isDualAddressNetwork ? 'Your Lithosphere address' : 'One address — works on Lithosphere Mainnet + every EVM chain') : meta[chain].network}</div>
+        <div style={{ fontSize: 10, color: network.color, fontWeight: 600, marginBottom: 8 }}>● {chain === 'evm' ? (isDualAddressNetwork ? 'Your Lithosphere address' : 'One address — the same on every EVM network') : meta[chain].network}</div>
         {chain !== 'evm' && chainBalance && (
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
             Balance: {chainBalance}
           </div>
         )}
 
+        {/* Lithosphere chains: litho1… is the address; the 0x form is a
+            smaller "EVM address" row under it (client: "need to show both
+            litho1 and 0x formats", then 2026-10-15: "make litho1 the
+            preferred standard"). The QR follows litho1 unless asked. */}
         {chain === 'evm' && lithoAddr && isDualAddressNetwork ? (
           <>
             <AddrFormatRow label="Litho1" value={lithoAddr}/>
-            <AddrFormatRow label="EVM address" value={evmAddr}/>
+            <AddrFormatRow label="EVM address" value={evmAddr} secondary/>
+            <button type="button" onClick={() => setShowAlt(v => !v)} style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              fontSize: 10, color: 'var(--text-muted)', textDecoration: 'underline',
+            }}>
+              {showAlt ? 'Show QR for the EVM address' : 'Show QR for the litho1 address'}
+            </button>
           </>
         ) : (
           <div className="addr-box" style={{ fontSize: 10 }}>{addr ? <HiAddr value={addr} full/> : '—'}</div>
         )}
 
         <button className="btn-primary" onClick={copy} style={{ marginTop: 14, width: '100%' }} disabled={!addr}>
-          {copied ? '✓ Copied!' : `Copy ${chain === 'evm' && isDualAddressNetwork ? (showAlt ? 'Litho1' : 'EVM address') : 'Address'}`}
+          {copied ? '✓ Copied!' : (chain === 'evm' && isDualAddressNetwork && !showAlt ? 'Copy EVM address' : 'Copy address')}
         </button>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.6 }}>
           {chain === 'evm' && isDualAddressNetwork
             ? 'Share your litho1 address. The EVM address is the same account, for apps that only accept 0x.'
             : chain === 'evm'
-            ? 'Both formats above are the SAME wallet — receives assets on Lithosphere Mainnet and every EVM chain (Ethereum, BNB, Polygon, Base, Arbitrum, Optimism, Linea, Avalanche).'
+            ? 'The same account on every EVM network (Ethereum, BNB, Polygon, Base, Arbitrum, Optimism, Linea, Avalanche). On Lithosphere, share your litho1 address.'
             : `Only send ${network.label} assets to this address.`}
         </div>
       </div>
@@ -4265,8 +4286,9 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
 
 /* Litho1 + 0x are the SAME address — client asked both to be visible at
  * once on Receive rather than hidden behind a toggle (Mac/iOS feedback,
- * 2026-09-16). One row per format, each independently copyable. */
-function AddrFormatRow({ label, value }: { label: string; value: string }) {
+ * 2026-09-16). One row per format, each independently copyable; the EVM
+ * row is `secondary` — smaller and muted, never level with litho1. */
+function AddrFormatRow({ label, value, secondary = false }: { label: string; value: string; secondary?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     if (!value) return;
@@ -4274,6 +4296,20 @@ function AddrFormatRow({ label, value }: { label: string; value: string }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+  // One muted line, no box or highlight — there, copyable, but not a peer.
+  if (secondary) return (
+    <div style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}>
+      <button onClick={copy} title="Click to copy" style={{
+        width: '100%', display: 'flex', alignItems: 'baseline', gap: 6,
+        background: 'none', border: 'none', padding: '0 2px', cursor: 'pointer', textAlign: 'left',
+        color: 'var(--text-muted)',
+      }}>
+        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.4, whiteSpace: 'nowrap' }}>{label}</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 9, fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all' }}>{value || '—'}</span>
+        <span style={{ fontSize: 9, fontWeight: 700, whiteSpace: 'nowrap', color: copied ? 'var(--green, #22c55e)' : undefined }}>{copied ? '✓ Copied' : 'Copy'}</span>
+      </button>
+    </div>
+  );
   return (
     <div style={{ width: '100%', textAlign: 'left', marginBottom: 10 }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: 0.4, marginBottom: 4 }}>{label}</div>
@@ -5167,8 +5203,8 @@ function AddressBookSection({
     const optimistic: AbContact = {
       id:          tempId,
       name:        trimmedName,
-      evm:         trimmedAddr,
-      litho:       (() => { try { return evmToLitho(trimmedAddr) || undefined; } catch { return undefined; } })(),
+      evm:         contactEvm(trimmedAddr) ?? trimmedAddr, // saved as 0x, like addContact
+      litho:       contactLitho(trimmedAddr),
       updatedAt:   Date.now(),
       pendingSync: true,
     };
@@ -5223,7 +5259,7 @@ function AddressBookSection({
         />
         <input
           className="settings-select"
-          placeholder="0x… or litho1…"
+          placeholder="litho1… or 0x…"
           value={address}
           onChange={e => setAddress(e.target.value)}
           spellCheck={false}
@@ -5253,11 +5289,13 @@ function AddressBookSection({
                     {c.name}
                     {c.pendingSync && <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>· not synced</span>}
                   </div>
-                  <div style={{
+                  {/* Shown as litho1… (saved as 0x — same account); the EVM
+                      address only in the tooltip. */}
+                  <div title={contactEvm(c.evm) ? `EVM address ${contactEvm(c.evm)}` : c.evm} style={{
                     color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace',
                     fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>
-                    {c.evm}
+                    {c.litho || contactLitho(c.evm) || c.evm}
                   </div>
                 </div>
                 <button
@@ -6478,19 +6516,19 @@ function App() {
 
                   <div className="menu-divider"/>
 
-                  <button className="menu-item" onClick={() => { navigator.clipboard?.writeText(walletLitho); setAccountMenu(false); }}>
+                  {/* copyText: navigator.clipboard is blocked in the packaged
+                      file:// renderer. */}
+                  <button className="menu-item" onClick={() => { void copyText(walletLitho); setAccountMenu(false); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                     </svg>
                     Copy address
                   </button>
-                  {/* The same account in 0x form, for apps that only take that. */}
-                  <button className="menu-item" onClick={() => { navigator.clipboard?.writeText(walletAddr); setAccountMenu(false); }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                    </svg>
+                  {/* The same account in 0x form, for apps that only take that —
+                      a small muted line under "Copy address", not a peer. */}
+                  <button className="menu-item" onClick={() => { void copyText(walletAddr); setAccountMenu(false); }}
+                    style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 10px 8px 36px', marginTop: -4 }}>
                     Copy EVM address
                   </button>
 

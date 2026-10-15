@@ -9,7 +9,7 @@ import {
   Pencil, Trash2, X, ArrowUpRight, ArrowDownLeft, Clock,
 } from 'lucide-react';
 import { getAccountName, getVisibleAccountIndices } from '../../lib/vault';
-import { displayAddress, LITHO_MAINNET_CHAIN_ID } from '../../lib/address';
+import { toLithoForm, shortAddress } from '../../lib/address';
 import { TOKENS } from '../../lib/tokens';
 import { type IndexerActivityItem } from '../../lib/indexer';
 import { pendingActivityRows } from '../../lib/tx-store';
@@ -64,7 +64,6 @@ export function TopNav({
   const [mobileMenu, setMobileMenu]   = useState(false);
   const showSwitcher = !!onSwitchAccount && accountCount >= 1;
   const accountLabel = `Account ${activeIdx + 1}`;
-  const [addrFmt,  setAddrFmt]  = useState<'litho' | 'evm'>('litho');
   const [copiedFmt, setCopiedFmt] = useState<'litho' | 'evm' | null>(null);
 
   /* What the chip + dropdown render. Falls back to a friendly placeholder
@@ -72,11 +71,11 @@ export function TopNav({
      mounts TopNav after unlock — but defensive). */
   const litho      = wallet?.addresses?.litho      ?? '';
   const evm        = wallet?.addresses?.evm        ?? '';
-  const shortLitho = wallet?.addresses?.shortLitho ?? '—';
-  const shortEvm   = wallet?.addresses?.shortEvm   ?? '—';
 
-  const activeAddr   = addrFmt === 'litho' ? litho      : evm;
-  const activeShort  = addrFmt === 'litho' ? shortLitho : shortEvm;
+  /* The wallet goes by its litho1… address everywhere — chip, menu header,
+     account list (client 2026-10-15: "make litho1 format the preferred
+     standard"). The 0x form is only the small "EVM address" row below. */
+  const activeAddr   = litho || evm;
 
   const isActive = (href: string) =>
     href === '/app' ? pathname === '/app' : pathname.startsWith(href);
@@ -168,14 +167,12 @@ export function TopNav({
                   <span className="menu-net-status">Synced</span>
                 </div>
 
-                {/* Dual-address rows. Each shows the full address + a copy
-                    affordance. Tapping the row also flips the chip preview
-                    to that format. */}
+                {/* The litho1 address with a copy affordance; tapping the
+                    row copies it too. */}
                 <div className="menu-divider"/>
-                <div className="addr-row" onClick={() => setAddrFmt('litho')}>
+                <div className="addr-row" onClick={() => copyAddr('litho')}>
                   <div className="addr-row-label">
                     <span className="addr-row-tag">LITHO1</span>
-                    {addrFmt === 'litho' && <span className="addr-row-active">●</span>}
                   </div>
                   <div className="addr-row-value" title={litho}><Addr value={litho} head={8} tail={6}/></div>
                   <button
@@ -186,30 +183,27 @@ export function TopNav({
                     {copiedFmt === 'litho' ? '✓' : <Copy size={14}/>}
                   </button>
                 </div>
-                {/* The EVM address — secondary; litho1 stays the default
-                    (client 2026-10-15: "make litho1 first class"). */}
-                <div className="addr-row" onClick={() => setAddrFmt('evm')} title="EVM address">
+                {/* The same account's EVM address — secondary (smaller,
+                    muted, never selected), for apps that take only 0x. */}
+                <div className="addr-row addr-row-secondary" onClick={() => copyAddr('evm')} title="EVM address">
                   <div className="addr-row-label">
-                    <span className="addr-row-tag">EVM</span>
-                    {addrFmt === 'evm' && <span className="addr-row-active">●</span>}
+                    <span className="addr-row-tag">EVM address</span>
                   </div>
-                  <div className="addr-row-value" title={evm}><Addr value={evm} head={6} tail={4}/></div>
+                  <div className="addr-row-value" title={evm}>{evm ? shortAddress(evm) : ''}</div>
                   <button
                     className="addr-row-copy"
                     onClick={e => { e.stopPropagation(); copyAddr('evm'); }}
                     title="Copy EVM address"
                   >
-                    {copiedFmt === 'evm' ? '✓' : <Copy size={14}/>}
+                    {copiedFmt === 'evm' ? '✓' : <Copy size={12}/>}
                   </button>
                 </div>
                 {showSwitcher && (
                   <>
                     <div className="menu-divider"/>
                     {getVisibleAccountIndices().map((i) => {
-                      // In the format picked above — litho1 unless EVM is.
-                      const a = addrFmt === 'litho' && accountAddresses[i]
-                        ? displayAddress(accountAddresses[i], LITHO_MAINNET_CHAIN_ID)
-                        : accountAddresses[i];
+                      // Each account by its litho1… address.
+                      const a = accountAddresses[i] ? toLithoForm(accountAddresses[i]) : accountAddresses[i];
                       // A wallet must always keep one account, so the last one
                       // can't be removed. Render the control DISABLED rather
                       // than hiding it — hiding made the feature look absent
@@ -234,7 +228,7 @@ export function TopNav({
                               <span>{getAccountName(i)}</span>
                               {a && (
                                 <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', fontWeight: 400 }}>
-                                  {a.startsWith('litho1') ? `${a.slice(0, 12)}…${a.slice(-6)}` : `${a.slice(0, 6)}…${a.slice(-4)}`}
+                                  {shortAddress(a)}
                                 </span>
                               )}
                             </span>

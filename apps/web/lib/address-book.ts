@@ -121,7 +121,7 @@ export async function addContact(input: { name: string; address: string; note?: 
   if (!trimmedName) throw new Error('Name required');
 
   const evm = resolveToEvm(input.address.trim());
-  if (!evm) throw new Error('Address must be a valid 0x or litho1');
+  if (!evm) throw new Error('Enter a valid litho1… or 0x… address');
   const checksummed = getAddress(evm);
 
   const all = loadContacts();

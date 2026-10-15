@@ -30,7 +30,7 @@ import {
 } from '../lib/address-book';
 import { historyAddresses, loadPendingTxs, pendingActivityRows, resolvePendingTxs, syncExplorerHistory, type PendingTx } from '../lib/tx-store';
 import { BumpFeeModal } from './BumpFeeModal';
-import { displayAddress } from '../lib/address';
+import { displayAddress, toLithoForm } from '../lib/address';
 import { bitcoinExplorerUrl } from '../lib/bitcoin';
 import { BookUser, Plus, Trash2, ArrowUpRight, Zap } from 'lucide-react';
 import { TokenDetailModal } from './TokenDetailModal';
@@ -1109,7 +1109,7 @@ function AddressBookSection({ Section, Row }: {
         />
         <input
           className="settings-select"
-          placeholder="0x… or litho1…"
+          placeholder="litho1… or 0x…"
           value={address}
           onChange={e => setAddress(e.target.value)}
           spellCheck={false}
@@ -1149,8 +1149,10 @@ function AddressBookSection({ Section, Row }: {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {c.evm}
+                {/* The contact by its litho1… address (same account as the
+                    stored 0x, which only the tooltip mentions). */}
+                <div title={c.evm.startsWith('0x') ? `EVM address: ${c.evm}` : undefined} style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.litho || toLithoForm(c.evm)}
                 </div>
               </div>
               <button
@@ -1406,7 +1408,8 @@ function DnnsSection({ Section }: {
         {status === 'available' && <div style={{ fontSize: 11, color: 'var(--green, #10b981)' }}>✓ Available</div>}
         {status === 'taken'     && (
           <div style={{ fontSize: 11, color: 'var(--orange, #f59e0b)' }}>
-            Taken — owned by <span style={{ fontFamily: 'Geist Mono, monospace' }}>{resolveAddr}</span>
+            {/* The owner is a Lithosphere account — shown as litho1…. */}
+            Taken — owned by <span style={{ fontFamily: 'Geist Mono, monospace' }}>{resolveAddr && toLithoForm(resolveAddr)}</span>
           </div>
         )}
 

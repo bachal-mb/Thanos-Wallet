@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Wallet, HDNodeWallet, Mnemonic, randomBytes } from 'ethers';
+import { Wallet, HDNodeWallet, Mnemonic, randomBytes, getAddress } from 'ethers';
 import { MultXBridgePanel } from './MultXBridgePanel';
 import { MULTX_CONFIG } from '../../lib/multx-thanos';
 import {
@@ -47,10 +47,10 @@ import type {
   QuanttStrategy, QuanttChain, QuanttDexPreference, CreateAgentInput,
   QuanttKillSwitch, QuanttStreamStatus, QuanttAgentConfig, QuanttTimeframe, UpdateAgentInput, QuanttFundingOption,
 } from '@thanos/sdk-core';
-import { toAgentConfig, agentFundingOptions, agentFundingBlock, withdrawalResumable, diffAgentConfig, validateAgentUpdate, killSwitchMessage, QUANTT_TIMEFRAMES, startIdleLock, reviewSigningRequest, checkRecipient, copySecretToClipboard, passwordProblem } from '@thanos/sdk-core';
+import { toAgentConfig, agentFundingOptions, agentFundingBlock, agentWalletNetwork, withdrawalResumable, diffAgentConfig, validateAgentUpdate, killSwitchMessage, QUANTT_TIMEFRAMES, startIdleLock, reviewSigningRequest, checkRecipient, copySecretToClipboard, passwordProblem } from '@thanos/sdk-core';
 import { SignReviewPanel } from './SignReviewPanel';
 import {
-  evmToLitho, ECOSYSTEM_APPS, ECOSYSTEM_HUB, type EcosystemApp,
+  evmToLitho, lithoToEvm, resolveToEvm, ECOSYSTEM_APPS, ECOSYSTEM_HUB, type EcosystemApp,
   groupBySection, looksLikeUrl, normalizeUrl,
   fetchPortfolioHistory, type Holding, type PortfolioHistory, type Range,
   TransactionSimulator, type SimulationReport,
@@ -197,6 +197,21 @@ const LITHO_MAINNET_ID = 9005;
 function lithoDisplayAddr(addr: string, chainId: number | undefined): string {
   if (chainId !== LITHO_MAINNET_ID || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
   try { return evmToLitho(addr); } catch { return addr; }
+}
+/** A recipient typed or filled in for `chainId`, in that network's format:
+ *  litho1… on Lithosphere Mainnet, 0x on every other EVM network. Both are
+ *  the same account, so what's sent doesn't change. Anything else (a
+ *  name.litho, half-typed input) is left alone. */
+function recipientForChain(value: string, chainId: number | undefined): string {
+  const v = value.trim();
+  if (chainId === LITHO_MAINNET_ID) { const l = lithoDisplayAddr(v, chainId); return l === v ? value : l; }
+  if (chainId == null || !/^litho1[0-9a-z]+$/.test(v)) return value;
+  try { return getAddress(lithoToEvm(v)); } catch { return value; }
+}
+/** A saved contact's address as shown: litho1… (contacts are EVM accounts,
+ *  the same on Lithosphere), whichever form it was saved in. */
+function contactDisplayAddr(c: AbContact): string {
+  return c.litho || lithoDisplayAddr(c.evm, LITHO_MAINNET_ID);
 }
 
 /* Discover dApp tile icons — public/images/dapps/<id>.png. Without this
@@ -2005,10 +2020,13 @@ function QuanttWalletTab({ agentId }: { agentId: string }) {
   const address = quanttPickStr(o, ['address', 'walletAddress', 'wallet_address'])
     ?? quanttPickStr(quanttAsObj(o?.wallet), ['address']);
   const balanceRows = quanttObjRows(wallet, ['address', 'walletAddress', 'wallet_address', 'wallet']);
+  // An agent run on Lithosphere Mainnet has a litho1… address; the 0x form
+  // is only the smaller "EVM address" line.
+  const shown = address ? lithoDisplayAddr(address, agentWalletNetwork(wallet)?.chainId) : undefined;
 
   const copy = async () => {
-    if (!address) return;
-    try { await navigator.clipboard.writeText(address); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* blocked */ }
+    if (!shown) return;
+    try { await navigator.clipboard.writeText(shown); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* blocked */ }
   };
 
   if (!wallet && !err) return <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Loading wallet…</div>;
@@ -2019,8 +2037,11 @@ function QuanttWalletTab({ agentId }: { agentId: string }) {
       <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
         Agent wallet address
       </div>
-      <div className="addr-box" style={{ wordBreak: 'break-all', fontSize: 10.5 }}>{address ?? '—'}</div>
-      <button className="btn-outline" onClick={copy} disabled={!address}>{copied ? '✓ Copied' : 'Copy address'}</button>
+      <div className="addr-box" style={{ wordBreak: 'break-all', fontSize: 10.5 }}>
+        {shown ?? '—'}
+        {shown && shown !== address && <div style={{ fontSize: 9.5, marginTop: 4, opacity: 0.7 }}>EVM address {address}</div>}
+      </div>
+      <button className="btn-outline" onClick={copy} disabled={!shown}>{copied ? '✓ Copied' : 'Copy address'}</button>
 
       {balanceRows.length > 0 && (
         <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px solid var(--border-default)', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -2064,6 +2085,8 @@ function QuanttDepositTab({ agentId, myAddress, funding }: {
   }, [agentId]);
 
   const address = quanttPickStr(quanttAsObj(wallet), ['address', 'walletAddress', 'wallet_address']);
+  // Funded on Lithosphere Mainnet, it's shown and filled into Send as litho1….
+  const shown = address ? lithoDisplayAddr(address, fund?.chainId) : undefined;
   // Quantts may still run the agent on another network (Lithosphere on Makalu).
   const block = agentFundingBlock(fund, wallet);
 
@@ -2095,7 +2118,7 @@ function QuanttDepositTab({ agentId, myAddress, funding }: {
           Send crypto from your Thanos wallet to this agent&apos;s own address.
         </div>
         <div className="addr-box" style={{ wordBreak: 'break-all', fontSize: 10, marginBottom: 8 }}>
-          {address ?? (err ? 'Unavailable' : 'Loading…')}
+          {shown ?? (err ? 'Unavailable' : 'Loading…')}
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4, marginBottom: 8 }}>
           {!funding ? 'Checking which network this agent uses…'
@@ -2133,10 +2156,10 @@ function QuanttDepositTab({ agentId, myAddress, funding }: {
         {confirmResult === 'err' && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 8 }}>{confirmMsg}</div>}
       </div>
 
-      {showSend && address && (
+      {showSend && shown && (
         // The picked asset on the agent's network — a symbol alone picked
         // whichever USDC came first (e.g. Ethereum for a Base agent).
-        <SendModal onClose={() => setShowSend(false)} initialChain="evm" initialCoin={fund?.sym ?? 'USDC'} initialChainId={fund?.chainId} initialNetworkLabel={fund?.label} initialTo={address} address={myAddress}/>
+        <SendModal onClose={() => setShowSend(false)} initialChain="evm" initialCoin={fund?.sym ?? 'USDC'} initialChainId={fund?.chainId} initialNetworkLabel={fund?.label} initialTo={shown} address={myAddress}/>
       )}
     </div>
   );
@@ -3366,7 +3389,9 @@ function SettingsScreen({
         <img src="/icons/icon128.png" alt="" width="32" height="32"/>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="acct-header-name">{accountName}</div>
-          <div className="acct-header-addr">{address ? `${address.slice(0, 8)}…${address.slice(-5)}` : '—'}</div>
+          {/* litho1… (App passes it first); the prefix doesn't count toward
+              the characters shown, so it isn't just "litho1xy…". */}
+          <div className="acct-header-addr" title={address}>{address ? `${address.slice(0, hiPrefixLen(address) + 6)}…${address.slice(-5)}` : '—'}</div>
         </div>
         <button className="copy-chip" onClick={copyAddr} disabled={!address}>{copiedAddr ? 'Copied' : 'Copy'}</button>
       </div>
@@ -3985,7 +4010,7 @@ function TokenDetailModal({ sym, chainId, onClose, onSend, onReceive }: {
 
 type ExtSendChain = 'evm' | 'bitcoin' | 'solana' | 'cosmos';
 const EXT_CHAIN_META: Record<ExtSendChain, { label: string; sym: string; decimals: number; placeholder: string }> = {
-  evm:     { label: 'Lithosphere', sym: 'LITHO', decimals: 18, placeholder: '0x… , litho1… or name.litho' },
+  evm:     { label: 'Lithosphere', sym: 'LITHO', decimals: 18, placeholder: 'litho1…, 0x… or name.litho' },
   bitcoin: { label: 'Bitcoin',     sym: 'BTC',   decimals: 8,  placeholder: 'bc1q… / 1… / 3…' },
   solana:  { label: 'Solana',      sym: 'SOL',   decimals: 9,  placeholder: 'Base58 Solana address' },
   cosmos:  { label: 'Cosmos Hub',  sym: 'ATOM',  decimals: 6,  placeholder: 'cosmos1…' },
@@ -4112,6 +4137,18 @@ function SendModal({ onClose, initialChain, initialCoin, initialChainId, initial
     ?? (pinned ? undefined : (initialCoin ? coins.find(c => c.sym === initialCoin) : undefined) ?? coins[0])
     ?? null;
   const seedMissing = pinned && !selectedKey && !coin;
+
+  // The recipient follows the asset's network: litho1… on Lithosphere
+  // Mainnet, 0x elsewhere — rewritten when the network changes (and for a
+  // pre-filled address). Same account either way; what's sent is unchanged.
+  const evmChainId = chain === 'evm' ? coin?.chainId : undefined;
+  useEffect(() => {
+    if (evmChainId != null) setTo(v => recipientForChain(v, evmChainId));
+  }, [evmChainId]);
+  // Known-bad recipients are flagged as soon as they're entered, in either form.
+  const toEvm = chain === 'evm' ? resolveToEvm(to.trim()) : null;
+  const recipientWarning = toEvm ? checkRecipient(toEvm) : null;
+
   const amtNum = parseFloat(amt || '0');
   const overBalance = chain === 'evm' && !!coin && amtNum > coin.balance;
   const recipientOk = (() => {
@@ -4245,9 +4282,9 @@ function SendModal({ onClose, initialChain, initialCoin, initialChainId, initial
         )}
 
         <label className="field-label" style={{ marginTop: 14 }}>RECIPIENT</label>
-        <input className="field" placeholder={EXT_CHAIN_META[chain].placeholder} value={to} onChange={e => setTo(e.target.value)}/>
-        {chain === 'evm' && /^0x[0-9a-fA-F]{40}$/.test(to.trim()) && checkRecipient(to.trim()) && (
-          <div role="alert" style={{ fontSize: 11, color: '#dc2626', marginTop: 4, fontWeight: 600 }}>{checkRecipient(to.trim())}</div>
+        <input className="field" placeholder={evmChainId != null && evmChainId !== LITHO_MAINNET_ID ? '0x… or name.litho' : EXT_CHAIN_META[chain].placeholder} value={to} onChange={e => setTo(e.target.value)}/>
+        {recipientWarning && (
+          <div role="alert" style={{ fontSize: 11, color: '#dc2626', marginTop: 4, fontWeight: 600 }}>{recipientWarning}</div>
         )}
         {chain === 'evm' && <OwnAccountPicker seed={seed} current={address ?? ''} to={to} chainId={coin?.chainId} onPick={setTo}/>}
         {!!to.trim() && !recipientOk && chain !== 'evm' && (
@@ -4626,7 +4663,7 @@ function AddressBookModal({ onClose }: { onClose: () => void }) {
         />
         <input
           className="field"
-          placeholder="0x… or litho1…"
+          placeholder="litho1… or 0x…"
           value={address}
           onChange={e => setAddress(e.target.value)}
           spellCheck={false}
@@ -4644,28 +4681,33 @@ function AddressBookModal({ onClose }: { onClose: () => void }) {
 
         {contacts.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-            {contacts.map(c => (
-              <div key={c.id} className="set-row" style={{ alignItems: 'center', padding: '8px 10px' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="set-label" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {c.name}{c.pendingSync && <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 6 }}>· not synced</span>}
+            {contacts.map(c => {
+              // litho1… however it was saved; the 0x form only in the tooltip.
+              const shown = contactDisplayAddr(c);
+              return (
+                <div key={c.id} className="set-row" style={{ alignItems: 'center', padding: '8px 10px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="set-label" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {c.name}{c.pendingSync && <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 6 }}>· not synced</span>}
+                    </div>
+                    <div className="set-sub" title={shown !== c.evm ? `${shown}\nEVM address ${c.evm}` : shown}
+                      style={{ fontFamily: 'Geist Mono, monospace', fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {shortTxAddr(shown)}
+                    </div>
                   </div>
-                  <div className="set-sub" style={{ fontFamily: 'Geist Mono, monospace', fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {c.evm.slice(0,6)}…{c.evm.slice(-4)}
-                  </div>
+                  <button
+                    onClick={() => onDelete(c.id)}
+                    style={{
+                      background: 'none', border: 'none', color: 'var(--red)',
+                      fontSize: 11, cursor: 'pointer', padding: '4px 6px',
+                    }}
+                    title="Delete contact"
+                  >
+                    Delete
+                  </button>
                 </div>
-                <button
-                  onClick={() => onDelete(c.id)}
-                  style={{
-                    background: 'none', border: 'none', color: 'var(--red)',
-                    fontSize: 11, cursor: 'pointer', padding: '4px 6px',
-                  }}
-                  title="Delete contact"
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
         {contacts.length === 0 && (
@@ -4748,7 +4790,7 @@ function ExtCrossChainSwap({ bridge }: { bridge: boolean }) {
           <span style={{ position: 'absolute', top: 2, left: recipientOn ? 20 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff' }}/>
         </button>
       </div>
-      {recipientOn && <input className="field" value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="0x… recipient" spellCheck={false} style={{ marginTop: 6 }}/>}
+      {recipientOn && <input className="field" value={recipient} onChange={e => setRecipient(e.target.value)} placeholder={toChain.id === 'makalu' ? 'litho1… or 0x… recipient' : '0x… recipient'} spellCheck={false} style={{ marginTop: 6 }}/>}
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.4 }}>
         ⚠ Cross-chain routing runs on the MultX bridge, currently offline — showing an indicative rate. Execution unlocks when the bridge is live.
       </div>

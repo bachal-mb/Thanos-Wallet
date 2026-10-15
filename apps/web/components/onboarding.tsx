@@ -13,6 +13,7 @@ import {
   setSeedBackedUp,
 } from '../lib/vault';
 import { serializeSource, deserializeSource, type WalletSource } from '../lib/wallet-source';
+import { toLithoForm } from '../lib/address';
 import { initSigner, lockSigner } from '../lib/signer-client';
 import { startIdleLock, idleExpired, readAutoLockMinutes, copySecretToClipboard, passwordProblem } from '@thanos/sdk-core';
 
@@ -345,9 +346,14 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
               Not a valid private key. Must be 0x + 64 hex characters.
             </div>
           )}
+          {/* The account it opens, by its litho1… address; the 0x form
+              underneath, smaller, to match it against another wallet. */}
           {pkInput && validatePrivateKey(pkInput) && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'Geist Mono, monospace' }}>
-              → {validatePrivateKey(pkInput)!.address}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all' }}>
+              → {toLithoForm(validatePrivateKey(pkInput)!.address)}
+              <div style={{ fontSize: 10, marginTop: 2, opacity: 0.8 }}>
+                EVM address {validatePrivateKey(pkInput)!.address}
+              </div>
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>

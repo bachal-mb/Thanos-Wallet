@@ -12,6 +12,7 @@ import {
 import { useWallet } from './shell/AppShell';
 import { getActiveAccountIndex } from '../lib/vault';
 import { thanosBridge, multxChain, multxSigner } from '../lib/multx-thanos';
+import { displayAddress, shortAddress } from '../lib/address';
 
 const TONE: Record<'pending' | 'ok' | 'bad' | 'warn', string> = {
   pending: 'var(--blue, #3b7af7)', ok: 'var(--green, #10b981)', bad: 'var(--red)', warn: 'var(--yellow, #eab308)',
@@ -188,7 +189,8 @@ export function MultXBridge() {
       {option && from && to && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.5 }}>
           Arrives at <strong style={{ color: 'var(--text-secondary)' }}>your address on {to.name}</strong>
-          {address ? <> ({address.slice(0, 6)}…{address.slice(-4)})</> : null}. The network fee is paid
+          {/* litho1… when it arrives on Lithosphere Mainnet. */}
+          {address ? <> ({shortAddress(displayAddress(address, dst))})</> : null}. The network fee is paid
           in {from.nativeSymbol} on {from.name}{base ? '; the first transfer of a token also needs an approval' : ''}.
         </div>
       )}

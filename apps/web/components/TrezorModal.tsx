@@ -21,6 +21,7 @@ import {
   getActiveTrezorBtcAccount, setActiveTrezorBtcAccount,
   getActiveTrezorSolAccount, setActiveTrezorSolAccount,
 } from '../lib/trezor-accounts';
+import { toLithoForm, shortAddress } from '../lib/address';
 
 type Coin  = 'evm' | 'btc' | 'sol';
 type Stage = 'idle' | 'connecting' | 'picker' | 'done';
@@ -120,9 +121,16 @@ export function TrezorModal({ onClose }: { onClose: () => void }) {
                 CONNECTED · {tab.label.toUpperCase()}
               </div>
               <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>Trezor · m/{active.path}</div>
+              {/* The EVM account by its litho1… address; the 0x form (what
+                  the device shows) smaller, underneath. */}
               <div style={{ fontSize: 11, fontFamily: 'Geist Mono, monospace', color: 'var(--text-muted)', marginTop: 4, wordBreak: 'break-all' }}>
-                {active.address}
+                {coin === 'evm' ? toLithoForm(active.address) : active.address}
               </div>
+              {coin === 'evm' && (
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, opacity: 0.8 }}>
+                  EVM address <span style={{ fontFamily: 'Geist Mono, monospace' }}>{shortAddress(active.address)}</span>
+                </div>
+              )}
               <button className="btn-outline" style={{ width: '100%', marginTop: 10 }} onClick={onDisconnect}>
                 Forget account
               </button>
@@ -184,9 +192,11 @@ export function TrezorModal({ onClose }: { onClose: () => void }) {
                     }}>{i}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 11, fontFamily: 'Geist Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {acc.address}
+                        {coin === 'evm' ? toLithoForm(acc.address) : acc.address}
                       </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>m/{acc.path}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                        m/{acc.path}{coin === 'evm' ? ` · EVM ${shortAddress(acc.address)}` : ''}
+                      </div>
                     </div>
                   </button>
                 ))}

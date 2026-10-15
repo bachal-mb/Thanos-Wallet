@@ -5,6 +5,7 @@ import { usePrices } from '../lib/usePrices';
 import { useWallet } from './shell/AppShell';
 import {
   validateAddressForChain, resolveToEvm, truncateLithoAddress, displayAddress,
+  toLithoForm, recipientForChain, shortAddress,
 } from '../lib/address';
 import {
   SendError,
@@ -130,6 +131,10 @@ type SendNet =
 /** Lithosphere Mainnet — its accounts also have a litho1… form. */
 const LITHO_MAINNET_CHAIN_ID = 9005;
 
+/** The EVM chain id of a send network, or null for a non-EVM one. */
+const sendNetChainId = (id: string): number | null =>
+  id.startsWith('evm:') ? parseInt(id.slice(4), 10) : null;
+
 // A function (not a frozen const) so a custom network added mid-session
 // shows up immediately — allEvmChains() re-reads the live custom-assets cache.
 /** Visibility key (Settings → Manage networks) for a send/receive network id. */
@@ -172,7 +177,8 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
   // its own chain like every EVM network.
   const [network, setNetwork] = useState<SendNet['id']>(initialNetwork ?? 'evm:9005');
   const [coin, setCoin]       = useState(initialCoin ?? 'LITHO');
-  const [to, setTo]           = useState(initialAddress ?? '');
+  // A pre-filled Lithosphere recipient shows as litho1… (the send resolves it).
+  const [to, setTo]           = useState(() => recipientForChain(initialAddress ?? '', sendNetChainId(initialNetwork ?? 'evm:9005')));
   const [amount, setAmount]   = useState('');
   // "Send max" — the displayed balance is filled, but the actual send reserves
   // the network fee (BTC: spend-all minus fee; SOL/Cosmos: subtract a fee
@@ -191,6 +197,10 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
   useEffect(() => {
     if (prevNetwork.current === network) return;
     prevNetwork.current = network;
+    // The recipient follows the network's address form: litho1… on
+    // Lithosphere, 0x… on the other EVM networks (litho1 is invalid there).
+    // Same account either way; what's broadcast is resolved to 0x anyway.
+    setTo(t => recipientForChain(t, sendNetChainId(network)));
     if (network === 'kamet')        setCoin('LITHO');
     else if (network === 'bitcoin') setCoin('BTC');
     else if (network === 'solana')  setCoin('SOL');
@@ -202,8 +212,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
     }
   }, [network]);
 
-  const evmChainId: number | null =
-    network.startsWith('evm:') ? parseInt(network.slice(4), 10) : null;
+  const evmChainId = sendNetChainId(network);
   const evmChain = evmChainId !== null ? allEvmChains().find(c => c.chainId === evmChainId) ?? null : null;
 
   // Sendable assets for the selected network. Litho has the LEP100 set; EVM
@@ -1295,12 +1304,13 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
               <div className="field-label" style={{ marginBottom: 4 }}>My accounts</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {mine.map(a => {
-                  const sel = to.trim().toLowerCase() === a.address.toLowerCase();
-                  // litho1… on Lithosphere Mainnet; the send still goes to its 0x form.
+                  // Shown and filled as litho1… on Lithosphere Mainnet (0x on
+                  // other EVM networks); the send resolves it to the 0x form.
                   const shown = displayAddress(a.address, evmChainId);
+                  const sel = (resolveToEvm(to.trim()) ?? to.trim()).toLowerCase() === a.address.toLowerCase();
                   return (
                     <button
-                      key={a.idx} type="button" onClick={() => { setTo(a.address); setShowSuggest(false); }}
+                      key={a.idx} type="button" onClick={() => { setTo(shown); setShowSuggest(false); }}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px',
                         borderRadius: 10, border: '1px solid ' + (sel ? 'var(--blue)' : 'transparent'),
@@ -1314,7 +1324,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
                       </span>
                       <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>{a.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{shown.slice(0, shown.startsWith('litho1') ? 12 : 8)}…{shown.slice(-6)}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>{shortAddress(shown)}</span>
                       </span>
                       {sel && <span style={{ marginLeft: 'auto', color: 'var(--blue)', fontSize: 13 }}>✓</span>}
                     </button>
@@ -1336,11 +1346,12 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
             maxHeight: 180,
             overflowY: 'auto',
           }}>
+            {/* A contact fills as litho1… on Lithosphere Mainnet, 0x elsewhere. */}
             {contactSuggestions.map(c => (
               <button
                 key={c.id}
                 type="button"
-                onMouseDown={() => { setTo(c.evm); setShowSuggest(false); }}
+                onMouseDown={() => { setTo(displayAddress(c.evm, evmChainId)); setShowSuggest(false); }}
                 style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
                   width: '100%', padding: '8px 10px', borderRadius: 6,
@@ -1398,7 +1409,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
               <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 ✓ Resolved {to.trim()}
                 <span style={{ color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace' }}>
-                  → <Addr value={dnnsResolved} head={8} tail={6}/>
+                  → <Addr value={toLithoForm(dnnsResolved)} head={8} tail={6}/>
                 </span>
               </div>
             )}
@@ -1416,10 +1427,11 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           </div>
         )}
 
+        {/* A scanned 0x fills as litho1… on Lithosphere Mainnet. */}
         <QrScannerModal
           open={showQr}
           onClose={() => setShowQr(false)}
-          onResult={(decoded) => { setTo(decoded); setShowQr(false); }}
+          onResult={(decoded) => { setTo(displayAddress(decoded, evmChainId)); setShowQr(false); }}
         />
 
         {recipientVerdict && recipientVerdict.risk !== 'safe' && (
@@ -1515,11 +1527,11 @@ interface ReceiveNetwork {
   badge?:  string;
   /** Optional alternate address format (Lithosphere has dual addresses:
    *  the native litho1… bech32 and the same wallet's 0x EVM form). The
-   *  QR view shows a primary/alt toggle when this is set. */
+   *  QR view offers it through a small secondary link when this is set. */
   altAddress?: string;
-  /** Label shown in the toggle for the primary address (e.g. "Native"). */
+  /** Name of the primary address (e.g. "litho1 address"). */
   primaryLabel?: string;
-  /** Label shown in the toggle for the alternate address (e.g. "EVM"). */
+  /** Name of the alternate address (e.g. "EVM address"). */
   altLabel?: string;
 }
 
@@ -1612,7 +1624,7 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
         // (client 2026-10-15: "make litho1 first class").
         address:      litho || evm,
         altAddress:   litho && evm ? evm : undefined,
-        primaryLabel: 'Litho1',
+        primaryLabel: 'litho1 address',
         altLabel:     'EVM address',
       });
     }
@@ -1749,33 +1761,10 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
               </div>
             </div>
 
-            {active.altAddress && (
-              <div style={{
-                display: 'inline-flex',
-                background: 'var(--bg-elevated)',
-                border: '1px solid var(--border-default)',
-                borderRadius: 999, padding: 3,
-              }}>
-                {[
-                  { key: 'primary' as const, label: active.primaryLabel ?? 'Native', isAlt: false },
-                  { key: 'alt'     as const, label: active.altLabel     ?? 'Alt',    isAlt: true  },
-                ].map(o => {
-                  const selected = o.isAlt === showAlt;
-                  return (
-                    <button
-                      key={o.key}
-                      onClick={() => setShowAlt(o.isAlt)}
-                      style={{
-                        background: selected ? 'var(--bg-card)' : 'transparent',
-                        border: 'none', cursor: 'pointer',
-                        padding: '6px 14px', borderRadius: 999,
-                        fontSize: 12, fontWeight: 600,
-                        color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                        transition: 'background .15s ease, color .15s ease',
-                      }}
-                    >{o.label}</button>
-                  );
-                })}
+            {/* Showing the secondary form — say which one it is. */}
+            {active.altAddress && showAlt && (
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>
+                {active.altLabel ?? 'Alternate address'} · same account
               </div>
             )}
 
@@ -1816,6 +1805,23 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
             <button className="btn-primary" style={{ width: '100%' }} onClick={() => copy(active, displayedAddress)}>
               {copiedId === active.id ? '✓ Copied' : 'Copy address'}
             </button>
+            {/* The 0x form only as a small secondary link, for apps that take
+                nothing else — litho1… is the default and what's shared
+                (client 2026-10-15: "make litho1 format the preferred standard"). */}
+            {active.altAddress && (
+              <button
+                type="button"
+                onClick={() => setShowAlt(v => !v)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  fontSize: 11, color: 'var(--text-muted)', textDecoration: 'underline',
+                }}
+              >
+                {showAlt
+                  ? `Back to ${active.primaryLabel ?? 'the main address'}`
+                  : `Need the 0x form? Show ${active.altLabel ?? 'the alternate address'}`}
+              </button>
+            )}
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.5, maxWidth: 320 }}>
               Only send <strong style={{ color: 'var(--text-secondary)' }}>{asset.sym}</strong> on <strong style={{ color: 'var(--text-secondary)' }}>{active.name}</strong> to this address.
               Sending another asset or chain will result in lost funds.
@@ -1956,7 +1962,8 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
             0x… string because EVM accounts are chain-agnostic. The
             wallet now fetches balances on every chain in the list so
             this isn't aspirational any more, just a UX reminder that
-            you don't need to keep separate keypairs per chain. */}
+            you don't need to keep separate keypairs per chain. litho1…
+            leads; the 0x form is only mentioned as the secondary one. */}
         {evm && (
           <div style={{
             marginTop: 10,
@@ -1966,9 +1973,9 @@ export function ReceiveModal({ onClose, initialAsset }: { onClose: () => void; i
             borderRadius: 10,
             fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5,
           }}>
-            Lithosphere has two address formats — <strong>litho1…</strong> (native) and
-            <strong> 0x…</strong> (EVM). They're the same wallet; open the QR to switch
-            formats. Other chains have their own keypairs.
+            Your Lithosphere address is <strong>litho1…</strong>. The same account also
+            has an EVM address (0x…) for apps that only take that form — it's under
+            the QR. Other chains have their own keypairs.
           </div>
         )}
       </div>
@@ -2127,7 +2134,13 @@ function CrossChainSwap({ bridge }: { bridge: boolean }) {
   const fromUsd = price(fromTok) * amtNum;
   const toUsd   = price(toTok) * out;
   const sameRoute = fromId === toId && fromTok === toTok;
-  const recValid  = !recipientOn || /^0x[a-fA-F0-9]{40}$/.test(recipient.trim());
+  // Lithosphere as the destination goes by litho1… (0x accepted too);
+  // every other destination takes 0x only.
+  const toLitho   = toId === 'lithosphere';
+  const recValid  = !recipientOn || (toLitho
+    ? !!resolveToEvm(recipient.trim())
+    : /^0x[a-fA-F0-9]{40}$/.test(recipient.trim()));
+  const ownOnDest = toLitho ? (wallet?.addresses?.litho || wallet?.addresses?.evm) : wallet?.addresses?.evm;
 
   const swapSides = () => { setFromId(toId); setToId(fromId); setFromTok(toTok); setToTok(fromTok); };
 
@@ -2192,7 +2205,7 @@ function CrossChainSwap({ bridge }: { bridge: boolean }) {
           className="field-input"
           value={recipient}
           onChange={e => setRecipient(e.target.value)}
-          placeholder={wallet?.addresses?.evm ? `${wallet.addresses.evm.slice(0, 8)}… (your wallet by default)` : '0x… recipient'}
+          placeholder={ownOnDest ? `${shortAddress(ownOnDest)} (your wallet by default)` : (toLitho ? 'litho1… or 0x… recipient' : '0x… recipient')}
           spellCheck={false}
           style={{ marginTop: 6, borderColor: recipient && !recValid ? 'var(--red)' : undefined }}
         />

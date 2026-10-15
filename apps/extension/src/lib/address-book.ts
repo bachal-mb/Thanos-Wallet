@@ -13,7 +13,7 @@
  * dedup on lower(address); addresses are public on-chain anyway).
  */
 import { getAddress } from 'ethers';
-import { evmToLitho } from '@thanos/sdk-core';
+import { evmToLitho, lithoToEvm, isLithoAddress } from '@thanos/sdk-core';
 import { apiClient } from './auth-client';
 import type { ContactDto } from '@thanos/api-client';
 import { encryptField, decryptField } from './contact-crypto';
@@ -24,6 +24,7 @@ export interface Contact {
   id:          string;
   name:        string;
   evm:         string;
+  /** litho1… form of the same account — what the popup shows. */
   litho?:      string;
   note?:       string;
   updatedAt:   number;
@@ -44,6 +45,22 @@ export function loadContacts(): Contact[] {
   } catch { return []; }
 }
 
+/** litho1… for a 0x address; undefined for anything else (evmToLitho throws
+ *  on non-0x input, which used to fail the whole add / sync). */
+function lithoOf(evm: string): string | undefined {
+  try { return evmToLitho(evm); } catch { return undefined; }
+}
+
+/** 0x (checksummed) for a 0x or litho1… address; null for anything else. */
+function evmOf(address: string): string | null {
+  const a = address.trim();
+  try {
+    if (/^0x[0-9a-fA-F]{40}$/.test(a)) return getAddress(a);
+    if (isLithoAddress(a.toLowerCase())) return getAddress(lithoToEvm(a.toLowerCase()));
+  } catch { /* malformed */ }
+  return null;
+}
+
 function saveContacts(list: Contact[]) {
   if (typeof window === 'undefined') return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
@@ -51,17 +68,15 @@ function saveContacts(list: Contact[]) {
 }
 
 async function contactFromDto(d: ContactDto): Promise<Contact> {
-  let evm = d.address;
-  try {
-    const checksummed = getAddress(d.address);
-    evm = checksummed;
-  } catch { /* leave as-is — server may have stored a non-EVM address */ }
+  // A row saved as litho1… is the same 0x account; anything else (a non-EVM
+  // address the server may hold) is kept as-is.
+  const evm = evmOf(d.address) ?? d.address;
   const [name, note] = await Promise.all([decryptField(d.name), decryptField(d.notes)]);
   return {
     id:        d.id,
     name:      name ?? d.name,
     evm,
-    litho:     evmToLitho(evm) || undefined,
+    litho:     lithoOf(evm),
     note:      note ?? undefined,
     updatedAt: new Date(d.updatedAt).getTime(),
   };
@@ -76,12 +91,15 @@ export async function addContact(input: { name: string; address: string; note?: 
   const trimmedName = input.name.trim();
   if (!trimmedName) throw new Error('Name required');
 
-  // Accept 0x or any plain address string; checksum if EVM.
-  let evm = input.address.trim();
-  try { evm = getAddress(evm); } catch { /* not an EVM address — keep raw */ }
+  // litho1… or 0x — one account either way, kept in both forms (litho / evm).
+  // The cloud row carries the 0x form: it's the one every Thanos client's
+  // contact sync parses (desktop's throws on a litho1… row).
+  const evm = evmOf(input.address);
+  if (!evm) throw new Error('Enter a litho1… or 0x… address');
+  const litho = lithoOf(evm);
 
   const all = loadContacts();
-  if (all.some(c => c.evm === evm)) throw new Error('Address already in your contacts');
+  if (all.some(c => c.evm.toLowerCase() === evm.toLowerCase())) throw new Error('Address already in your contacts');
 
   if (await isAuthed()) {
     const [encName, encNote] = await Promise.all([
@@ -103,7 +121,7 @@ export async function addContact(input: { name: string; address: string; note?: 
     id:          newId(),
     name:        trimmedName,
     evm,
-    litho:       evmToLitho(evm) || undefined,
+    litho,
     note:        input.note?.trim() || undefined,
     updatedAt:   Date.now(),
     pendingSync: true,
@@ -157,7 +175,8 @@ export async function syncContactsFromServer(): Promise<{ synced: number; pushed
 
 export function findContactByAddress(address: string): Contact | null {
   if (!address) return null;
-  const target = address.toLowerCase();
+  // litho1… or 0x — both name the same contact.
+  const target = (evmOf(address) ?? address).toLowerCase();
   return loadContacts().find(c => c.evm.toLowerCase() === target) ?? null;
 }
 
