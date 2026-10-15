@@ -97,6 +97,10 @@ or locked account gets a reason instead of buttons.
 
 ## For the audit
 
+`scripts/multisig-audit-package.sh` builds the package to send: the in-scope sources of one commit,
+the signers the bridges call, the vendored SDK with its SHA-256, every test result and this file,
+with checksums, as one zip (`RUN_E2E=1` adds the web end-to-end run).
+
 In scope: `packages/multisig/src` (and its mobile copy), the four bridges listed above,
 `apps/mobile/components/MultiSig.tsx`, the CSP change in `apps/web/lib/csp.js`, and the vendored
 SDK (`vendor/litho-vault-sdk-1.0.0.tgz`, built from litho-vault by `npm run pack -w @litho-vault/sdk`;
