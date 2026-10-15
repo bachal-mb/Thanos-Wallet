@@ -182,7 +182,7 @@ export function MainnetWelcomeCard() {
              style={{ display: 'block', margin: '0 auto 16px', objectFit: 'contain' }}/>
         <h2 style={{ fontSize: 19, fontWeight: 800, margin: '0 0 6px' }}>Welcome to Thanos</h2>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55, margin: '0 0 6px' }}>
-          Your wallet is on <strong>Lithosphere Mainnet</strong>
+          Your wallet is on <strong>Lithosphere Mainnet</strong>{' '}
           (chain&nbsp;{MAINNET_CHAIN_ID}). The native coin is <strong>LITHO</strong>;
           Bitcoin, Solana, Cosmos and EVM networks are built in too.
         </p>

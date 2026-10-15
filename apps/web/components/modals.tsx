@@ -127,6 +127,9 @@ type SendNet =
   | { id: 'cosmos';  label: 'Cosmos Hub' }
   | { id: `evm:${number}`; label: string };
 
+/** Lithosphere Mainnet — its accounts also have a litho1… form. */
+const LITHO_MAINNET_CHAIN_ID = 9005;
+
 // A function (not a frozen const) so a custom network added mid-session
 // shows up immediately — allEvmChains() re-reads the live custom-assets cache.
 /** Visibility key (Settings → Manage networks) for a send/receive network id. */
@@ -378,14 +381,30 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         : { valid: false, format: 'cosmos' as const, reason: 'Not a valid Cosmos address (cosmos1…)' };
     }
     if (isEvmSend) {
-      // External EVM chains take 0x addresses only — no litho1 form here.
+      // Lithosphere Mainnet takes both forms of an account, litho1… and 0x…
+      // (as the apps do); the send goes to the 0x form (evmRecipient below).
+      if (evmChainId === LITHO_MAINNET_CHAIN_ID && /^litho1/i.test(trimmed)) {
+        return resolveToEvm(trimmed)
+          ? { valid: true,  format: 'litho' as const, reason: '' }
+          : { valid: false, format: 'litho' as const, reason: 'Not a valid litho1 address' };
+      }
+      // Other EVM chains take 0x addresses only — no litho1 form there.
       return /^0x[a-fA-F0-9]{40}$/.test(trimmed)
         ? { valid: true,  format: 'evm' as const, reason: '' }
-        : { valid: false, format: 'evm' as const, reason: `${evmChain?.name ?? 'EVM'} requires a 0x address` };
+        : { valid: false, format: 'evm' as const, reason: evmChainId === LITHO_MAINNET_CHAIN_ID
+          ? 'Lithosphere takes a litho1… or 0x… address'
+          : `${evmChain?.name ?? 'EVM'} requires a 0x address` };
     }
     const v = validateAddressForChain(trimmed, KAMET_CHAIN_ID);
     return { ...v, format: v.format as 'evm' | 'litho' | null };
-  }, [to, isSolanaSend, isBitcoinSend, isCosmosSend, isEvmSend, evmChain]);
+  }, [to, isSolanaSend, isBitcoinSend, isCosmosSend, isEvmSend, evmChain, evmChainId]);
+
+  /* The address an EVM send goes to: a Lithosphere litho1… becomes the same
+     account's 0x form; every other chain was checked to be 0x already. */
+  const evmRecipient = useMemo(() => {
+    const trimmed = to.trim();
+    return evmChainId === LITHO_MAINNET_CHAIN_ID ? resolveToEvm(trimmed) ?? trimmed : trimmed;
+  }, [to, evmChainId]);
 
   /* Canonical EVM form — what we'd actually broadcast to the chain.
      If the user typed a DNNS name and we resolved it, use that instead. */
@@ -457,7 +476,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         try {
           const est = await estimateNativeEvmFee(
             wallet.privateKey ? { privateKey: wallet.privateKey } : { seed: wallet.seed },
-            { chainId: evmChainId, recipient: to.trim(), amount },
+            { chainId: evmChainId, recipient: evmRecipient, amount },
           );
           if (!cancelled) setFeeStr(est ? `${Number(est.totalLitho).toFixed(6)} ${evmChain.nativeSymbol}` : null);
         } catch {
@@ -506,7 +525,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
       }
     }, 350);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [coin, to, amount, recipientValidation.valid, wallet?.seed, wallet?.privateKey, isSolanaSend, isBitcoinSend, isCosmosSend, isEvmSend, isLithoSend, evmChainId, evmChain]);
+  }, [coin, to, evmRecipient, amount, recipientValidation.valid, wallet?.seed, wallet?.privateKey, isSolanaSend, isBitcoinSend, isCosmosSend, isEvmSend, isLithoSend, evmChainId, evmChain]);
 
   /* Pre-send simulation — runs alongside the fee estimate above. Only
      fires on EVM/Lithosphere sends (Bitcoin + Solana + Cosmos go through
@@ -817,7 +836,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           const hash = await ledgerSignEvmTx({
             provider,
             from:  ledgerEvm.address,
-            to:    to.trim(),
+            to:    evmRecipient,
             value,
             path:  ledgerEvm.path,
           });
@@ -844,7 +863,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
       if (trezorEvm) {
         try {
           const hash = await sendEvmWithTrezor({
-            account: trezorEvm, chainId: evmChainId, recipient: to.trim(), amount,
+            account: trezorEvm, chainId: evmChainId, recipient: evmRecipient, amount,
           });
           recordPendingSend(hash);
           setTxHash(hash);
@@ -876,9 +895,9 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         const result = tokenOnChain
           ? await sendEvmToken(walletInput, {
               chainId: evmChainId, tokenAddress: tokenOnChain.address, decimals: tokenOnChain.decimals,
-              symbol: tokenOnChain.symbol, recipient: to.trim(), amount, accountIdx: acctIdx,
+              symbol: tokenOnChain.symbol, recipient: evmRecipient, amount, accountIdx: acctIdx,
             })
-          : await sendNativeEvm(walletInput, { chainId: evmChainId, recipient: to.trim(), amount, accountIdx: acctIdx });
+          : await sendNativeEvm(walletInput, { chainId: evmChainId, recipient: evmRecipient, amount, accountIdx: acctIdx });
         recordPendingSend(result.hash);
         setTxHash(result.hash);
         setStage('pending');
@@ -1232,7 +1251,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
               isSolanaSend  ? 'Solana address…'  :
               isBitcoinSend ? 'Bitcoin address…' :
               isCosmosSend  ? 'cosmos1…'         :
-              isEvmSend     ? `${evmChain?.name ?? 'EVM'} address (0x…)` :
+              isEvmSend     ? (evmChainId === LITHO_MAINNET_CHAIN_ID ? 'litho1… or 0x…' : `${evmChain?.name ?? 'EVM'} address (0x…)`) :
               'litho1… or 0x…'
             }
             value={to}
