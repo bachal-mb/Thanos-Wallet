@@ -113,6 +113,9 @@ https://thanos.fi/privacy is the canonical document.
 ## What's New in this version (release notes, 4,000 chars max)
 
 ```
+• Activity now shows every past transaction — including ones made
+  before Thanos or from another wallet — on Lithosphere, Ethereum, Base,
+  Arbitrum, Polygon, Optimism, Avalanche, Bitcoin, Solana and Cosmos.
 • Lithosphere Mainnet history: LITHO you send and receive shows in
   Activity again, now that Mainnet is live.
 • Received funds now show up: you get a notification ("You received
