@@ -1,123 +1,128 @@
 /**
- * Native LITHO activity from the Lithosphere Mainnet explorer (lithoscan.ai).
+ * Activity rows from the block explorers (lib/chain-history.ts) and the
+ * history Activity keeps on the device.
  *
- * Native LITHO value transfers emit no logs, so nothing log-based ever
- * reports them — without this feed a Mainnet send or receive only ever
- * showed as the optimistic local "Pending" row. The explorer indexes full
- * transactions and exposes GET /api/address/<0x|litho1>/txs (verified live
- * 2026-09-15: {txs:[...],total,limit,offset}).
+ * Activity used to read only native LITHO from LithoScan; everything else
+ * came from what this device sent. The client asked for every previous
+ * transaction (2026-10-15), so the activity hook now reads each network's
+ * explorer for the wallet's addresses. A full read is a few dozen requests,
+ * so it runs at most every FULL_HISTORY_EVERY_MS per address; refreshes in
+ * between read Lithosphere only (as before).
  *
- * (This was makalu-explorer.ts; its Makalu and Kamet testnet feeds are gone —
- * Makalu isn't part of the wallet any more, 2026-09-29.)
- *
- * Rows are mapped into the IndexerActivityItem shape so the Activity
- * screen renders them through the same row code.
+ * Rows are mapped into the IndexerActivityItem shape so the Activity screen
+ * renders them through the same row code.
  */
-import { formatUnits } from 'ethers';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { HistoryRow } from './chain-history';
 import type { IndexerActivityItem } from './indexer';
+import type { LocalActivityItem } from './local-activity';
 
-const MAINNET_API = 'https://lithoscan.ai/api';
+/** An explorer row as Activity shows it: the network it's on, and the token
+ *  contract for a token transfer. */
+export type HistoryActivityItem = IndexerActivityItem & Partial<Pick<LocalActivityItem, 'chain' | 'networkName' | 'tokenAddress'>>;
 
-interface ExplorerTx {
-  hash?: string;
-  evmHash?: string;
-  blockHeight?: number;
-  value?: string;
-  txType?: string;
-  success?: boolean;
-  inputData?: string;
-  timestamp?: string;
-  evmFromAddr?: string;
-  evmToAddr?: string;
+function isoOf(ms: number): string | undefined {
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
-/** Recent native-LITHO transfers involving `address` on Lithosphere
- *  Mainnet, newest first — or null when the explorer couldn't be reached
- *  (so the caller can say it's offline instead of showing an empty list). */
-export function fetchMainnetNativeActivity(address: string, timeoutMs = 15_000): Promise<IndexerActivityItem[] | null> {
-  return fetchExplorerNativeActivity(MAINNET_API, '', 'mainnet', address, timeoutMs);
+/** One explorer row as an Activity row. EVM rows are named by chain id (like
+ *  the wallet's own sends); BTC / SOL / ATOM have none, so they carry the
+ *  network name. Only known fields are set — the activity hook spreads the
+ *  row over what a send recorded here, and an undefined would blank it. */
+export function historyActivityItem(r: HistoryRow): HistoryActivityItem {
+  const receive = r.direction === 'in';
+  return {
+    id:     r.id,
+    type:   receive ? 'receive' : 'send',
+    symbol: r.sym,
+    amount: r.amount,
+    txHash: r.hash,
+    ts:     isoOf(r.ts),
+    status: r.status,
+    title:  `${receive ? 'Received' : 'Sent'} ${r.sym}`,
+    chain:  r.chain,
+    ...(r.chainId != null ? { chainId: r.chainId } : { networkName: r.networkName }),
+    ...(r.counterparty ? { counterparty: r.counterparty } : {}),
+    ...(r.tokenAddress ? { tokenAddress: r.tokenAddress } : {}),
+    ...(r.blockNumber != null ? { blockNumber: r.blockNumber } : {}),
+  };
 }
 
-async function fetchExplorerNativeActivity(
-  api: string,
-  labelSuffix: string,
-  idPrefix: string,
-  address: string,
-  timeoutMs: number,
-): Promise<IndexerActivityItem[] | null> {
-  if (!address) return [];
-  const me = address.toLowerCase();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${api}/address/${encodeURIComponent(address)}/txs?limit=50`, { signal: ctrl.signal });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { items?: ExplorerTx[]; txs?: ExplorerTx[] } | null;
-    const out: IndexerActivityItem[] = [];
-    // Per-address list since the Mainnet launch (2026-10-14): /api/txs
-    // now ignores ?address= and returns everyone's latest transactions.
-    for (const t of json?.items ?? json?.txs ?? []) {
-      const from = (t.evmFromAddr ?? '').toLowerCase();
-      const to   = (t.evmToAddr ?? '').toLowerCase();
-      // The endpoint returns recent GLOBAL txs when the address is unknown —
-      // keep only rows that genuinely involve this wallet.
-      if (from !== me && to !== me) continue;
-      // Native value transfers only (plain calls, no calldata) — contract
-      // calls aren't native LITHO moves.
-      if ((t.inputData ?? '0x') !== '0x') continue;
-      let wei = 0n;
-      try { wei = BigInt(t.value ?? '0'); } catch { continue; }
-      if (wei <= 0n) continue;
-      const isReceive = to === me;
-      const txHash = t.evmHash || t.hash || '';
-      if (!txHash) continue;
-      out.push({
-        id:           `${idPrefix}:${txHash}`,
-        type:         isReceive ? 'receive' : 'send',
-        symbol:       'LITHO',
-        amount:       formatUnits(wei, 18),
-        counterparty: isReceive ? from : to,
-        txHash,
-        blockNumber:  t.blockHeight,
-        ts:           t.timestamp,
-        status:       t.success === false ? 'failed' : 'confirmed',
-        title:        `${isReceive ? 'Received' : 'Sent'} LITHO${labelSuffix}`,
-        chainId:      9005,
-      });
-    }
-    return out;
-  } catch {
-    return null; // explorer unreachable
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Merge two feeds: dedupe by tx hash (the first feed wins), newest first;
- *  rows without a timestamp sink to the end. */
-export function mergeActivityFeeds(
-  indexer: IndexerActivityItem[],
-  native: IndexerActivityItem[],
-): IndexerActivityItem[] {
-  const seen = new Set(indexer.map((i) => i.txHash).filter(Boolean));
-  const merged = [...indexer, ...native.filter((n) => !n.txHash || !seen.has(n.txHash))];
-  return merged.sort((a, b) => (b.ts ? Date.parse(b.ts) : 0) - (a.ts ? Date.parse(a.ts) : 0));
-}
-
-/** Activity history kept on the device: the latest feed added to what was
- *  saved before, so a transaction that drops off the explorer's latest page
- *  stays in Activity. Deduped by tx hash (the fresh row wins), newest first,
- *  at most `max` rows. */
-export function accumulateActivity(
-  saved: IndexerActivityItem[],
-  fresh: IndexerActivityItem[],
-  max = 500,
-): IndexerActivityItem[] {
-  const key = (i: IndexerActivityItem) => (i.txHash ? i.txHash.toLowerCase() : `id:${i.id}`);
-  const byKey = new Map<string, IndexerActivityItem>();
-  for (const i of saved) byKey.set(key(i), i);
-  for (const i of fresh) byKey.set(key(i), i);
-  return [...byKey.values()]
+/** Activity history kept on the device: the latest read added to what was
+ *  saved before, so a transaction past the explorers' latest page stays in
+ *  Activity. Fresh rows replace every saved row of their transaction — a
+ *  status that has settled, and rows saved under the older one-row-per-hash
+ *  ids ("mainnet:<hash>"); a swap's legs share a hash, so rows are otherwise
+ *  kept per id. Newest first, at most `max` rows. */
+export function accumulateActivity<T extends IndexerActivityItem>(saved: T[], fresh: T[], max = 500): T[] {
+  const hashOf = (i: T) => (i.txHash ? i.txHash.toLowerCase() : '');
+  const freshHashes = new Set(fresh.map(hashOf).filter(Boolean));
+  const byId = new Map<string, T>();
+  for (const i of saved) if (!freshHashes.has(hashOf(i))) byId.set(i.id || hashOf(i), i);
+  for (const i of fresh) byId.set(i.id || hashOf(i), i);
+  return [...byId.values()]
     .sort((a, b) => (b.ts ? Date.parse(b.ts) : 0) - (a.ts ? Date.parse(a.ts) : 0))
     .slice(0, max);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Receives this device noticed from a balance increase (lib/incoming.ts, no
+ *  hash) that an explorer row now lists with its hash — same network and
+ *  token, the same amount as Activity displayed it, within a day — are left
+ *  out so the receive isn't listed twice. Each explorer row stands in for at
+ *  most one. */
+export function dropMatchedReceives<T extends LocalActivityItem>(local: T[], feed: HistoryActivityItem[]): T[] {
+  const used = new Set<string>();
+  return local.filter((l) => {
+    if (l.type !== 'receive' || l.txHash) return true;
+    const amount = parseFloat(String(l.amount).replace(/,/g, ''));
+    if (!Number.isFinite(amount)) return true;
+    // The noticed amount was shown to 4 decimals (8 below 1).
+    const tolerance = Math.max(amount >= 1 ? 1e-4 : 1e-8, amount * 1e-6);
+    const match = feed.find((x) => !used.has(x.id) && x.type === 'receive' && !!x.txHash
+      && x.symbol === l.symbol
+      && (l.chainId != null ? x.chainId === l.chainId : !!l.chain && x.chain === l.chain)
+      && Math.abs(parseFloat(x.amount) - amount) <= tolerance
+      && Math.abs((x.ts ? Date.parse(x.ts) : NaN) - l.tsMs) <= DAY_MS);
+    if (!match) return true;
+    used.add(match.id);
+    return false;
+  });
+}
+
+/* ─── Full-read throttle ─────────────────────────────────────────────── */
+
+const FULL_SYNC_PREFIX = 'history_full_sync:';
+export const FULL_HISTORY_EVERY_MS = 5 * 60 * 1000;
+/** Mirrors storage, so two screens loading at once can't both claim a read. */
+const lastFull = new Map<string, number>();
+
+/** Whether a full history read is due for `address`; when it is, it's
+ *  claimed (recorded now). */
+export async function claimFullHistorySync(address: string): Promise<boolean> {
+  const key = address.toLowerCase();
+  const now = Date.now();
+  const recent = (t?: number) => t != null && t <= now && now - t < FULL_HISTORY_EVERY_MS;
+  if (recent(lastFull.get(key))) return false;
+  let stored: number | undefined;
+  try {
+    const raw = await AsyncStorage.getItem(FULL_SYNC_PREFIX + key);
+    if (raw) stored = Number(raw);
+  } catch { /* unreadable — treat as due */ }
+  // Re-checked: another screen may have claimed it while storage was read.
+  if (recent(lastFull.get(key))) return false;
+  if (recent(stored)) { lastFull.set(key, stored!); return false; }
+  lastFull.set(key, now);
+  try { await AsyncStorage.setItem(FULL_SYNC_PREFIX + key, String(now)); } catch { /* best-effort */ }
+  return true;
+}
+
+/** Make the next refresh a full read — after one that couldn't reach the
+ *  network, or when funds have just arrived on a network the history covers. */
+export async function resetFullHistorySync(address: string): Promise<void> {
+  const key = address.toLowerCase();
+  lastFull.delete(key);
+  try { await AsyncStorage.removeItem(FULL_SYNC_PREFIX + key); } catch { /* best-effort */ }
 }

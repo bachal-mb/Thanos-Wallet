@@ -3052,7 +3052,7 @@ function ActivityScreen() {
               </div>
               <div className="row-mid">
                 <div className="row-name">{t.label} {t.sym}{t.pending && <span className="pending-pill">Pending</span>}{t.status === 'failed' && <span className="failed-pill">Failed</span>}</div>
-                <div className="row-sub">{t.time}</div>
+                <div className="row-sub">{t.time}{t.network ? ` · ${t.network}` : ''}</div>
               </div>
               <div className="row-right">
                 <div className={`row-amt ${t.pos ? 'pos' : ''}`}>{t.amount} {t.sym}</div>
@@ -3635,11 +3635,11 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
     if (!tx.txHash) { setDetLoading(false); return; }
     let cancel = false;
     setDetLoading(true);
-    fetchOnchainTxDetails(tx.txHash)
+    fetchOnchainTxDetails(tx.txHash, tx.chainId != null ? { chainId: tx.chainId } : undefined)
       .then(d => { if (!cancel) { setDet(d); setDetLoading(false); } })
       .catch(() => { if (!cancel) setDetLoading(false); });
     return () => { cancel = true; };
-  }, [tx.txHash]);
+  }, [tx.txHash, tx.chainId]);
 
   // Local sends start optimistically as pending — nothing else reports most
   // sends. Once the detail lookup has a receipt, the chain result is
@@ -3658,7 +3658,7 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
   const counterparty = tx.pos ? det?.from : det?.to;
   const cpLabel = tx.pos ? 'From' : 'Recipient';
   // Only the chain that actually has the tx knows its explorer — no default.
-  const explorer = det?.explorerTxUrl ?? null;
+  const explorer = det?.explorerTxUrl ?? tx.explorerUrl ?? null;
 
   return (
     <Modal title={title} onClose={onClose}>
@@ -3892,7 +3892,7 @@ function TokenDetailModal({ sym, chainId, onClose, onSend, onReceive }: {
         {rows.length === 0 && <div style={{ padding: '10px 0', textAlign: 'center', fontSize: 11, color: 'var(--text-muted)' }}>No {sym} activity yet.</div>}
         {rows.map(t => (
           <div key={t.id} onClick={() => setTxDetail(t)} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, cursor: 'pointer' }}>
-            <div><div style={{ fontWeight: 600 }}>{t.label}{t.pending && <span className="pending-pill">Pending</span>}{t.status === 'failed' && <span className="failed-pill">Failed</span>}</div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{t.time}</div></div>
+            <div><div style={{ fontWeight: 600 }}>{t.label}{t.pending && <span className="pending-pill">Pending</span>}{t.status === 'failed' && <span className="failed-pill">Failed</span>}</div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{t.time}{t.network ? ` · ${t.network}` : ''}</div></div>
             <span style={{ fontFamily: 'Geist Mono, monospace', color: t.pos ? '#10b981' : 'var(--text-secondary)' }}>{t.amount}</span>
           </div>
         ))}

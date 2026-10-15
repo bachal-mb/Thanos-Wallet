@@ -253,13 +253,19 @@ export function TokenDetailModal({ sym, chainId, onClose }: {
   }, [evmAddress, chainRow?.chainId, token.sym, token.address, nonEvm, live.loading]);
   const balUsd = bal.state === 'ok' && price != null ? bal.qtyNum * price : null;
 
-  /* Activity for this token — the sends this wallet recorded (no chain feed
-     covers every network; the Makalu-only indexer is gone). */
+  /* Activity for this token — the wallet's history (lib/tx-store.ts: its
+     sends plus every network's explorer). On an EVM chain's row, only that
+     chain's (ETH on Base isn't ETH on Ethereum); sends saved without their
+     chain still show. */
   const [activity, setActivity] = useState<Array<{ id: string; type: string; amount: string; ts?: string; status?: string }> | null>(null);
   const actOffline = false;
+  const rowChainId = chainRow?.chainId;
   useEffect(() => {
-    setActivity(pendingActivityRows([]).filter(i => i.symbol.toLowerCase() === token.sym.toLowerCase()).slice(0, 10));
-  }, [token.sym]);
+    setActivity(pendingActivityRows([])
+      .filter(i => i.symbol.toLowerCase() === token.sym.toLowerCase())
+      .filter(i => rowChainId == null || i.chainId === rowChainId || (i.chainId == null && i.chain === 'evm'))
+      .slice(0, 10));
+  }, [token.sym, rowChainId]);
 
   /* Sub-modals (Send / Receive pre-seeded with this token) */
   const [sub, setSub] = useState<SubModal>(null);

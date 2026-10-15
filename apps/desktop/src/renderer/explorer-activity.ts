@@ -1,117 +1,55 @@
 /**
- * Native LITHO activity from the Lithosphere chain explorers — desktop.
+ * The wallet's full history from each network's block explorer — desktop.
  *
- * Ported from apps/mobile/lib/makalu-explorer.ts (same API, same explorer
- * codebase across all three chains — verified live). The indexer
- * (services/indexer) only records LEP100 token Transfer EVENTS
- * (eth_getLogs) on Makalu; native LITHO value transfers emit no logs, so
- * they never reach /portfolio/:address's `activity` array, on ANY chain —
- * desktop had NO native-LITHO activity coverage at all before this file
- * existed, not even on Makalu. That's the root cause of the client's
- * "need all activity to show": a native LITHO send never appeared except
- * as the optimistic local "Pending" row (local-activity.ts), which then
- * never resolved to a confirmed row since nothing ever reported it.
+ * Until 2026-10-15 Activity only knew native LITHO on Lithosphere Mainnet
+ * (LithoScan) plus the sends made on this device; the client asked for every
+ * previous transaction, including ones made before Thanos or from another
+ * wallet. sdk-core's fetchChainHistory reads LithoScan (Lithosphere),
+ * Blockscout (Ethereum, Base, Arbitrum, Polygon, Optimism), Routescan
+ * (Avalanche), mempool.space (Bitcoin), the Solana RPC and the Cosmos REST
+ * API; BNB Chain and Linea need an Etherscan key (VITE_ETHERSCAN_API_KEY at
+ * build time). The rows are saved with the sends (local-activity.ts
+ * mergeHistoryRows), which keeps them after they leave an explorer's latest
+ * page and settles a matching pending send.
  *
- * Each explorer exposes GET /api/address/<0x|litho1>/txs — full
- * transactions, not just logged events.
+ * Every portfolio load reads Lithosphere (one cheap request, as before); the
+ * full read of every network runs at most every FULL_SYNC_MS per wallet.
  */
-import { formatUnits } from 'ethers';
+import { fetchChainHistory, type HistoryAddresses, type HistoryRow } from '@thanos/sdk-core';
+import { allEvmTokens } from './custom-assets';
+import { getLocalActivity, mergeHistoryRows, type LocalTx } from './local-activity';
 
-const MAKALU_API  = 'https://makalu.litho.ai/api';
-const KAMET_API   = 'https://kamet.litho.ai/api';
-// Lithosphere Mainnet's explorer — same codebase, verified live 2026-09-15.
-// The wallet defaults to Mainnet now, so this is the one that matters most.
-const MAINNET_API = 'https://lithoscan.ai/api';
+const FULL_SYNC_MS = 5 * 60 * 1000;
+const syncKey = (addr: string) => `thanos-history-sync:${addr.toLowerCase()}`;
 
-/** Shape matches portfolio.ts's local IndexerActivityItem exactly (id,
- *  type, symbol, amount, txHash?, ts?, status?) so callers can splice
- *  these rows directly into pf.activity before the DisplayTx mapping. */
-export interface ExplorerActivityItem {
-  id:      string;
-  type:    string;
-  symbol:  string;
-  amount:  string;
-  txHash?: string;
-  ts?:     string;
-  status?: string;
+const ETHERSCAN_KEY = import.meta.env.VITE_ETHERSCAN_API_KEY || undefined;
+
+function toLocal(r: HistoryRow): LocalTx {
+  return {
+    hash: r.hash, id: r.id, chain: r.chain, sym: r.sym,
+    amount: r.amount, ts: r.ts, status: r.status, direction: r.direction,
+    networkName: r.networkName,
+    ...(r.chainId != null ? { chainId: r.chainId } : {}),
+    ...(r.counterparty ? { counterparty: r.counterparty } : {}),
+    ...(r.tokenAddress ? { tokenAddress: r.tokenAddress } : {}),
+  };
 }
 
-interface ExplorerTx {
-  hash?: string;
-  evmHash?: string;
-  value?: string;
-  inputData?: string;
-  timestamp?: string;
-  evmFromAddr?: string;
-  evmToAddr?: string;
-  success?: boolean;
-}
-
-async function fetchExplorerNativeActivity(
-  api: string,
-  idPrefix: string,
-  address: string,
-  timeoutMs: number,
-): Promise<ExplorerActivityItem[]> {
-  if (!address) return [];
-  const me = address.toLowerCase();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${api}/address/${encodeURIComponent(address)}/txs?limit=50`, { signal: ctrl.signal });
-    if (!res.ok) return [];
-    const json = (await res.json()) as { items?: ExplorerTx[]; txs?: ExplorerTx[] } | null;
-    const out: ExplorerActivityItem[] = [];
-    // Per-address list since the Mainnet launch (2026-10-14): /api/txs
-    // now ignores ?address= and returns everyone's latest transactions.
-    for (const t of json?.items ?? json?.txs ?? []) {
-      const from = (t.evmFromAddr ?? '').toLowerCase();
-      const to   = (t.evmToAddr ?? '').toLowerCase();
-      if (from !== me && to !== me) continue;
-      // Native value transfers only — LEP100 token transfers arrive via the
-      // indexer feed, so skipping calldata-bearing txs avoids double rows.
-      if ((t.inputData ?? '0x') !== '0x') continue;
-      let wei = 0n;
-      try { wei = BigInt(t.value ?? '0'); } catch { continue; }
-      if (wei <= 0n) continue;
-      const isReceive = to === me;
-      const txHash = t.evmHash || t.hash || '';
-      if (!txHash) continue;
-      out.push({
-        id:     `${idPrefix}:${txHash}`,
-        type:   isReceive ? 'receive' : 'send',
-        symbol: 'LITHO',
-        amount: formatUnits(wei, 18),
-        txHash,
-        ts:     t.timestamp,
-        status: t.success === false ? 'failed' : 'confirmed',
-      });
-    }
-    return out.slice(0, 50);
-  } catch {
-    return []; // explorer unreachable — indexer feed still renders
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-export function fetchMakaluNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
-  return fetchExplorerNativeActivity(MAKALU_API, 'makalu', address, timeoutMs);
-}
-export function fetchKametNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
-  return fetchExplorerNativeActivity(KAMET_API, 'kamet', address, timeoutMs);
-}
-export function fetchMainnetNativeActivity(address: string, timeoutMs = 15_000): Promise<ExplorerActivityItem[]> {
-  return fetchExplorerNativeActivity(MAINNET_API, 'mainnet', address, timeoutMs);
-}
-
-/** Merge indexer rows + native-explorer rows, deduped by tx hash (indexer
- *  wins on a collision), newest first. */
-export function mergeNativeActivity<T extends { txHash?: string; ts?: string }>(
-  indexer: T[],
-  native: ExplorerActivityItem[],
-): T[] {
-  const seen = new Set(indexer.map((i) => i.txHash).filter(Boolean));
-  const merged = [...indexer, ...(native.filter((n) => !seen.has(n.txHash)) as unknown as T[])];
-  return merged.sort((a, b) => (b.ts ? Date.parse(b.ts) : 0) - (a.ts ? Date.parse(a.ts) : 0));
+/** Read this wallet's transfers from the explorers and save them with its
+ *  sends. Returns true when the saved list changed. */
+export async function syncWalletHistory(addrs: HistoryAddresses & { evm: string }): Promise<boolean> {
+  let last = 0;
+  try { last = Number(localStorage.getItem(syncKey(addrs.evm))) || 0; } catch { /* storage off */ }
+  const full = Date.now() - last >= FULL_SYNC_MS;
+  // Stamped up front, so a reload mid-read doesn't start a second full read.
+  // One unreachable explorer is simply retried in the next window.
+  if (full) { try { localStorage.setItem(syncKey(addrs.evm), String(Date.now())); } catch { /* storage off */ } }
+  const { rows } = await fetchChainHistory(addrs, {
+    sources: full ? 'all' : 'lithosphere',
+    lithoPages: full ? 5 : 1,
+    knownHashes: getLocalActivity(addrs.evm).map((t) => t.hash),
+    knownTokens: allEvmTokens().map((t) => ({ chainId: t.chainId, address: t.address })),
+    etherscanKey: ETHERSCAN_KEY,
+  });
+  return mergeHistoryRows(addrs.evm, rows.map(toLocal));
 }

@@ -325,7 +325,7 @@ export function TopNav({
                       </span>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>{label}</span>
-                        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{n.amount} {n.symbol}</span>
+                        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{n.amount} {n.symbol}{n.network ? ` · ${n.network}` : ''}</span>
                       </span>
                     </button>
                   );

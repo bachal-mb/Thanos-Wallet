@@ -2876,11 +2876,12 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
     if (!tx.txHash) { setDetLoading(false); return; }
     let cancel = false;
     setDetLoading(true);
-    fetchOnchainTxDetails(tx.txHash)
+    // A row from the explorers knows its chain — read just that one.
+    fetchOnchainTxDetails(tx.txHash, tx.chainId != null ? { chainId: tx.chainId } : undefined)
       .then(d => { if (!cancel) { setDet(d); setDetLoading(false); } })
       .catch(() => { if (!cancel) setDetLoading(false); });
     return () => { cancel = true; };
-  }, [tx.txHash]);
+  }, [tx.txHash, tx.chainId]);
 
   const feeText = det?.feeNative != null
     ? `${det.feeNative.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${det.nativeSymbol}`
@@ -2889,7 +2890,9 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
     ? '≈ ' + withCurrencyAffix(convertFromUsd(det.feeUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
     : null;
   const nonceText = det?.nonce != null ? String(det.nonce) : (detLoading ? '…' : '—');
-  const counterparty = tx.pos ? det?.from : det?.to;
+  // The explorer's counterparty first: for a token transfer the chain's
+  // `to` is the token contract, not the recipient.
+  const counterparty = tx.counterparty ?? (tx.pos ? det?.from : det?.to);
   const cpLabel = tx.pos ? 'From' : 'Recipient';
   const explorer = det?.explorerTxUrl ?? null;
 
@@ -2904,7 +2907,7 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
         <TxDetailRow label="Date">{fmtTxDateTime(tx.rawTs)}</TxDetailRow>
         <TxDetailRow label="Status"><span style={{ color: statusColor, fontWeight: 700 }}>{tx.status}</span></TxDetailRow>
         {counterparty && <TxDetailRow label={cpLabel}><span style={{ fontFamily: 'Geist Mono, monospace' }}>{shortTxAddr(counterparty)}</span></TxDetailRow>}
-        {det?.networkName && <TxDetailRow label="Network">{det.networkName}</TxDetailRow>}
+        {(det?.networkName ?? tx.network) && <TxDetailRow label="Network">{det?.networkName ?? tx.network}</TxDetailRow>}
       </div>
 
       {tx.txHash && (
@@ -3331,8 +3334,12 @@ function TokenDetailModal({ sym, chainId, onClose, onSend, onReceive }: {
           {rows.map(t => (
             <div key={t.id} onClick={() => setTxDetail(t)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 13, cursor: 'pointer' }}>
               <div>
-                <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>{t.type}{t.pending && <PendingBadge/>}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t.date}</div>
+                <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {t.type}
+                  {t.pending ? <PendingBadge/> : t.status === 'Failed' && <span className="status-pill status-failed">Failed</span>}
+                </div>
+                {/* The same coin moves on several networks (ETH on Base, Arbitrum, …). */}
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t.date}{t.network ? ` · ${t.network}` : ''}</div>
               </div>
               <div style={{ textAlign: 'right', fontFamily: 'Geist Mono, monospace', fontSize: 12, color: t.pos ? 'var(--green)' : 'var(--text-secondary)' }}>{t.amount}</div>
             </div>

@@ -1,17 +1,19 @@
 /**
  * Cached-first portfolio snapshots for the desktop wallet.
  *
- * Persists the last SUCCESSFUL portfolio fetch (public balances / prices /
- * activity only — never secrets) keyed by wallet address, so usePortfolio can
- * paint real last-known numbers instantly on mount instead of a blank "···"
- * while the background refresh runs.
+ * Persists the last SUCCESSFUL portfolio fetch (public balances / prices
+ * only — never secrets) keyed by wallet address, so usePortfolio can paint
+ * real last-known numbers instantly on mount instead of a blank "···" while
+ * the background refresh runs. Activity isn't held here: the whole feed is
+ * saved in local-activity.ts (2026-10-15), and an older snapshot's
+ * `activity` is ignored.
  *
  * This is purely additive: it never touches fetch logic, timeouts, or the
  * existing offline/last-known contract. A snapshot is only written after a
  * fetch actually succeeded (see usePortfolio), so an offline/empty result can
  * never poison a good cache.
  */
-import type { DisplayCoin, DisplayTx } from './portfolio';
+import type { DisplayCoin } from './portfolio';
 
 // v2: snapshots from before Makalu was removed (2026-09-29) hold Makalu rows
 // with no chainId — never paint those, even for the second before a refresh.
@@ -19,7 +21,6 @@ const CACHE_PREFIX = 'thanos-portfolio-cache:v2:';
 
 export interface PortfolioSnapshot {
   coins:    DisplayCoin[];
-  activity: DisplayTx[];
   totalUsd: number;
   /** epoch ms of the successful fetch that produced this snapshot */
   at:       number;
@@ -39,7 +40,6 @@ export function readSnapshot(address: string): PortfolioSnapshot | null {
     if (!parsed || !Array.isArray(parsed.coins)) return null;
     return {
       coins:    parsed.coins as DisplayCoin[],
-      activity: Array.isArray(parsed.activity) ? (parsed.activity as DisplayTx[]) : [],
       totalUsd: typeof parsed.totalUsd === 'number' ? parsed.totalUsd : 0,
       at:       typeof parsed.at === 'number' ? parsed.at : 0,
     };

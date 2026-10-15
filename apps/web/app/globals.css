@@ -1962,6 +1962,11 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   .data-table th:nth-child(3),
   .data-table td:nth-child(3) { display: none; }
   .data-table th, .data-table td { padding: 8px 6px !important; font-size: 13px !important; }
+  /* Transactions: Price goes too, and amounts shrink, so the Amount column
+     fits — explorer history brings long token amounts. */
+  .tx-table th:nth-child(4),
+  .tx-table td:nth-child(4) { display: none; }
+  .tx-table .amt-pos, .tx-table .amt-neg { font-size: 13px; }
   .tx-avatar { width: 28px !important; height: 28px !important; font-size: 11px !important; }
   .tx-name   { font-size: 13px !important; }
   .tx-sym    { font-size: 11px !important; }

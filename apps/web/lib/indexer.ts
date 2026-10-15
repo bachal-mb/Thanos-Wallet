@@ -58,6 +58,10 @@ export interface IndexerActivityItem {
   /** ISO timestamp from the chain block. */
   ts?:       string;
   status?:   'pending' | 'confirmed' | 'failed' | string;
+  /** Local history rows (lib/tx-store.ts): the network it happened on —
+   *  its name when known, else the EVM chain id. */
+  network?:  string;
+  chainId?:  number;
 }
 
 /* ─── Low-level fetch with timeout + 5xx-as-offline ─────────────────── */

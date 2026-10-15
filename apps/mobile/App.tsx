@@ -135,7 +135,10 @@ initSentry();
 import { QrScannerModal } from './components/QrScannerModal';
 import { WalletConnectModal, WalletConnectRequestHost } from './components/WalletConnect';
 import { tokenIconSource, networkIconSource, chainBadgeSource, tokenIconPresentation } from './lib/token-icons';
-import { fetchMainnetNativeActivity, accumulateActivity } from './lib/explorer-activity';
+import { fetchChainHistory, historyEvmChainIds, type HistoryAddresses, type HistoryResult, type HistoryRow } from './lib/chain-history';
+import {
+  accumulateActivity, historyActivityItem, dropMatchedReceives, claimFullHistorySync, resetFullHistorySync,
+} from './lib/explorer-activity';
 import {
   formatFiat, initDisplayCurrency, applyDisplayCurrency, persistDisplayCurrency,
   convertFromUsd, withCurrencyAffix,
@@ -474,6 +477,17 @@ function formatAmount(n: number): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: n >= 1 ? 4 : 8 });
 }
 
+/** An Activity amount for display, unsigned: explorers report every wei
+ *  (0.000151744025760472), which overflows the row — round like balances;
+ *  dust keeps 2 significant digits instead of reading 0. */
+function activityAmount(raw: unknown): string {
+  const s = String(raw ?? '').replace(/^[+-]/, '');
+  const n = parseFloat(s.replace(/,/g, ''));
+  if (!isFinite(n) || n <= 0) return s;
+  const shown = formatAmount(n);
+  return shown === '0' ? n.toLocaleString('en-US', { maximumSignificantDigits: 2 }) : shown;
+}
+
 /** Format a USD amount in the user's display currency (Settings →
  *  Currency). Conversion happens at format time via lib/fx; the value
  *  pipeline stays USD throughout. Falls back to plain $ until rates load. */
@@ -517,20 +531,41 @@ interface PortfolioState {
 // a permanent wrong number.
 const HOME_LOAD_NATIVE_CHAINS = true;
 
+/** Etherscan API V2 key from the build — turns on BNB Chain and Linea history
+ *  (no free explorer API exists for them). */
+const ETHERSCAN_KEY = process.env.EXPO_PUBLIC_ETHERSCAN_API_KEY || undefined;
+const HISTORY_EVM_CHAINS = new Set(historyEvmChainIds(ETHERSCAN_KEY));
+
+/** Whether Activity's explorer history (lib/chain-history.ts) lists a
+ *  receive on this asset's network. LithoScan lists native LITHO only so far;
+ *  BTC / SOL / ATOM balances are only read with a seed, from which Activity
+ *  derives the same addresses. */
+function historyCovers(rx: WatchedBalance): boolean {
+  if (rx.chain && rx.chain !== 'evm') return true;
+  if (rx.chainId == null) return false;
+  if (rx.chainId === 9005) return !rx.tokenAddress;
+  return HISTORY_EVM_CHAINS.has(rx.chainId);
+}
+
 /** Funds received (lib/incoming.ts): an increase in a freshly read balance is
- *  kept in Activity and, with notifications on, announced. Native LITHO on
- *  Lithosphere Mainnet already reaches Activity from the explorer (with its
- *  hash), so it's only announced. */
+ *  announced (with notifications on), and kept in Activity unless the
+ *  network's explorer history covers it — that row arrives with its hash, so
+ *  this one would list the receive twice. The next Activity refresh then
+ *  reads every network instead of waiting out the 5-minute throttle. */
 function reportIncoming(address: string, reads: WatchedBalance[]): void {
   void detectIncoming(address, reads).then(async (list) => {
     for (const rx of list) {
       const amount = formatAmount(rx.amount);
       const now = Date.now();
-      if (!(rx.chainId === 9005 && !rx.tokenAddress)) {
+      if (!historyCovers(rx)) {
         await addLocalReceive(address, {
           id: `recv:${rx.key}:${now}`, sym: rx.sym, amount, ts: now,
           chainId: rx.chainId, chain: rx.chain, networkName: rx.networkName, tokenAddress: rx.tokenAddress,
         });
+      } else if (rx.chainId !== 9005) {
+        // (Lithosphere is read on every refresh anyway.) BTC / SOL / ATOM
+        // have their own window — see useActivity.
+        await resetFullHistorySync(rx.chain && rx.chain !== 'evm' ? `${address}:native` : address);
       }
       void notifyIfEnabled('Funds received', `You received ${amount} ${rx.sym} on ${rx.networkName}.`);
     }
@@ -807,22 +842,28 @@ function txDisplay(type: string): { label: string; positive: boolean } {
 }
 
 /** Subtle amber "Pending" pill for optimistic (local-only, not-yet-indexed)
- *  sends. Inline-styled so it's outside makeStyles' x1.5 font scaling — sizes
- *  are authored at their true rendered target. Fixed footprint so it doesn't
- *  cause layout shift when the row reconciles and the badge disappears. */
+ *  sends, and a red "Failed" one for a transaction that failed on-chain;
+ *  nothing otherwise. Inline-styled so it's outside makeStyles' x1.5 font
+ *  scaling — sizes are authored at their true rendered target. Fixed
+ *  footprint so it doesn't cause layout shift when the row reconciles and
+ *  the badge disappears. */
 const PENDING_AMBER = '#f59e0b';
-function PendingBadge() {
+const FAILED_RED = '#ef4444';
+function StatusBadge({ status }: { status?: string }) {
+  if (status !== 'pending' && status !== 'failed') return null;
+  const failed = status === 'failed';
+  const color = failed ? FAILED_RED : PENDING_AMBER;
   return (
     <View
       style={{
         flexDirection: 'row', alignItems: 'center', gap: 4,
         paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999,
-        backgroundColor: 'rgba(245,158,11,0.14)',
-        borderWidth: 1, borderColor: 'rgba(245,158,11,0.32)',
+        backgroundColor: failed ? 'rgba(239,68,68,0.14)' : 'rgba(245,158,11,0.14)',
+        borderWidth: 1, borderColor: failed ? 'rgba(239,68,68,0.32)' : 'rgba(245,158,11,0.32)',
       }}
     >
-      <View style={{ width: 5, height: 5, borderRadius: 999, backgroundColor: PENDING_AMBER }}/>
-      <Text style={{ color: PENDING_AMBER, fontSize: 10, fontWeight: '700', letterSpacing: 0.2 }}>Pending</Text>
+      <View style={{ width: 5, height: 5, borderRadius: 999, backgroundColor: color }}/>
+      <Text style={{ color, fontSize: 10, fontWeight: '700', letterSpacing: 0.2 }}>{failed ? 'Failed' : 'Pending'}</Text>
     </View>
   );
 }
@@ -848,11 +889,48 @@ interface ActivityState {
   reload: () => void;
 }
 
-/** Fetch the wallet's recent on-chain activity (Lithosphere Mainnet explorer
- *  + the wallet's own sends on every network). */
-function useActivity(address: string): ActivityState {
+/** Network an Activity row is on: what the feed or the send recorded, else
+ *  its chain id; BTC / SOL / ATOM rows have no chain id, only `chain`. */
+function activityNetwork(t: ActivityItem): string {
+  if (t.networkName) return t.networkName;
+  if (t.chainId != null) return sendNetworkName(t.chainId);
+  return t.chain && t.chain !== 'evm' ? CHAIN_META[t.chain].label : '';
+}
+
+/** BTC / SOL / ATOM addresses for the history, derived once per account. The
+ *  chain libraries are heavy, so — as in usePortfolio — they load after
+ *  interactions, one at a time. Public addresses only, keyed by EVM address. */
+const historyAddrCache = new Map<string, HistoryAddresses>();
+async function nativeHistoryAddrs(evm: string, phrase: string): Promise<HistoryAddresses> {
+  const key = evm.toLowerCase();
+  const hit = historyAddrCache.get(key);
+  if (hit) return hit;
+  await new Promise<void>((resolve) => { InteractionManager.runAfterInteractions(() => resolve()); });
+  const out: HistoryAddresses = {};
+  try { out.bitcoin = (await import('./lib/bitcoin')).getBitcoinAddress(phrase); } catch { /* left out */ }
+  try { out.solana = (await import('./lib/solana')).getSolanaAddress(phrase); } catch { /* left out */ }
+  try { out.cosmos = await (await import('./lib/cosmos')).getCosmosAddress(phrase); } catch { /* left out */ }
+  historyAddrCache.set(key, out);
+  return out;
+}
+
+/** Tokens the wallet lists, built in and user-added: their transfers always
+ *  show in history (other tokens only when priced — airdrop spam isn't). */
+async function historyKnownTokens(): Promise<Array<{ chainId: number; address: string }>> {
+  try {
+    const [ext, custom] = await Promise.all([import('./lib/evm-external'), import('./lib/custom-assets')]);
+    return [...ext.EXT_EVM_TOKENS, ...custom.customTokens()].map((t) => ({ chainId: t.chainId, address: t.address }));
+  } catch {
+    return [];
+  }
+}
+
+/** Fetch the wallet's on-chain activity — every network's explorer for its
+ *  addresses (lib/chain-history.ts) — plus the wallet's own sends. `seed`
+ *  adds the BTC / SOL / ATOM addresses. */
+function useActivity(address: string, seed?: string[]): ActivityState {
   const [nonce, setNonce]   = useState(0);
-  const [items, setItems]   = useState<IndexerActivityItem[]>([]);
+  const [items, setItems]   = useState<ActivityItem[]>([]);
   const [local, setLocal]   = useState<LocalActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
@@ -891,49 +969,87 @@ function useActivity(address: string): ActivityState {
     return () => { cancelled = true; };
   }, [address]);
 
+  // A private-key wallet has no BTC / SOL / ATOM addresses.
+  const phrase = seed && seed.length > 0 && !isPrivateKeyWallet(seed) ? seed.join(' ') : '';
+
   useEffect(() => {
-    if (!address) { setItems([]); setLoading(false); setOffline(false); return; }
+    if (!address || /^0x0{40}$/i.test(address)) { setItems([]); setLoading(false); setOffline(false); return; }
     let cancelled = false;
     setLoading(true); setOffline(false);
-    // Native LITHO transfers on Lithosphere Mainnet, from its explorer
-    // (native transfers emit no logs, so nothing else reports them). Every
-    // other send shows through the local log above, resolved against its own
-    // chain. (The Thanos indexer and the Makalu/Kamet explorers used to be
-    // merged in here — they only cover the testnets, no longer part of the
-    // wallet, 2026-09-29.)
-    Promise.all([fetchMainnetNativeActivity(address).catch(() => null), getActivitySnapshot(address)])
-      .then(([main, snap]) => {
-        if (cancelled) return;
-        if (main === null) {
-          // PRESERVE offline contract: keep whatever items we have, flag offline.
-          setLoading(false); setOffline(true);
-          return;
-        }
-        // Add to the saved history rather than replace it, so a transaction
-        // past the explorer's latest page stays in Activity (client
-        // 2026-10-11: "keep all the history in the activity").
-        const all = accumulateActivity(snap?.items ?? [], main);
-        setItems(all); setLoading(false); setOffline(false);
-        if (all.length) void setActivitySnapshot(address, all);
-      });
+    // Every transfer of the wallet's addresses, from each network's explorer
+    // (lib/chain-history.ts) — ones made before Thanos or from another wallet
+    // too (client 2026-10-15). All networks at most every 5 minutes per
+    // address; refreshes in between read Lithosphere only (LithoScan, cheap).
+    // Each read is added to the saved history rather than replacing it, so a
+    // transaction past the explorers' latest page stays in Activity (client
+    // 2026-10-11: "keep all the history in the activity") — saved even if the
+    // screen has closed meanwhile, so a full read is never wasted.
+    const save = async (rows: HistoryRow[]) => {
+      const snap = await getActivitySnapshot(address);
+      const all = accumulateActivity<ActivityItem>(snap?.items ?? [], rows.map(historyActivityItem));
+      if (rows.length && all.length) await setActivitySnapshot(address, all);
+      if (!cancelled) setItems(all);
+    };
+    void (async () => {
+      const full = await claimFullHistorySync(address);
+      let evm: Promise<HistoryResult>;
+      // BTC / SOL / ATOM are slower (Solana is a lookup per transaction), so
+      // they're read alongside and saved once the EVM networks have painted.
+      // Their own 5-minute window: the phrase can arrive after the address,
+      // and their first read mustn't wait for the next EVM window.
+      let native: Promise<HistoryResult | null> | null = null;
+      if (phrase && await claimFullHistorySync(`${address}:native`)) {
+        const snap = await getActivitySnapshot(address);
+        const knownHashes = (snap?.items ?? []).flatMap((i) => (i.txHash ? [i.txHash] : []));
+        native = nativeHistoryAddrs(address, phrase)
+          .then((addrs) => fetchChainHistory(addrs, { sources: 'all', knownHashes }))
+          .catch(() => { void resetFullHistorySync(`${address}:native`); return null; });
+      }
+      if (full) {
+        const knownTokens = await historyKnownTokens();
+        evm = fetchChainHistory({ evm: address }, { sources: 'all', lithoPages: 5, knownTokens, etherscanKey: ETHERSCAN_KEY });
+      } else {
+        evm = fetchChainHistory({ evm: address }, { sources: 'lithosphere' });
+      }
+      const res = await evm.catch(() => null);
+      if (!res || (res.rows.length === 0 && res.failed.includes('lithosphere'))) {
+        // PRESERVE offline contract: keep whatever items we have, flag
+        // offline — and read every network again on the next refresh.
+        if (full) void resetFullHistorySync(address);
+        if (!cancelled) { setLoading(false); setOffline(true); }
+        return;
+      }
+      await save(res.rows);
+      if (!cancelled) { setLoading(false); setOffline(false); }
+      const more = native ? await native : null;
+      if (more?.rows.length) await save(more.rows);
+    })().catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [address, nonce]);
+  }, [address, nonce, phrase]);
 
   // Merge the wallet's local sends into the explorer feed, deduped by tx
   // hash. A local entry is kept only while the explorer hasn't reported its
-  // hash; the moment it does, the local copy drops and the real confirmed
-  // row shows — no double entry, no layout shift. Local (newest) sort on top.
+  // hash; the moment it does, the local copy drops and the explorer's row
+  // (settled status included) shows — no double entry, no layout shift.
   const merged = useMemo<ActivityItem[]>(() => {
     if (local.length === 0) return items;
-    const byHash = new Map(local.filter((l) => l.txHash).map((l) => [l.txHash!.toLowerCase(), l]));
+    // Receives noticed from a balance increase that the explorers now list
+    // with their hash (saved before history covered that network).
+    const own = dropMatchedReceives(local, items);
+    const byHash = new Map(own.filter((l) => l.txHash).map((l) => [l.txHash!.toLowerCase(), l]));
     // A send the explorer also reports keeps what was recorded at send time
-    // (network, sender, token, memo); the explorer's status and fields win.
+    // (network, sender, token, memo); the explorer's status and fields win,
+    // unless the explorer still says pending and this device has settled it.
+    // Only on its own leg — a swap's legs share one hash.
     const enriched = items.map((x) => {
       const l = x.txHash ? byHash.get(x.txHash.toLowerCase()) : undefined;
-      return l ? { ...l, ...x } : x;
+      if (!l || l.type !== x.type) return x;
+      return { ...l, ...x, status: x.status === 'pending' ? l.status : x.status };
     });
-    const fresh = local.filter(
-      (l) => !items.some((x) => (!!x.txHash && x.txHash === l.txHash) || x.id === l.id),
+    const feedHashes = new Set(items.flatMap((x) => (x.txHash ? [x.txHash.toLowerCase()] : [])));
+    const feedIds = new Set(items.map((x) => x.id));
+    const fresh = own.filter(
+      (l) => !(l.txHash && feedHashes.has(l.txHash.toLowerCase())) && !feedIds.has(l.id),
     );
     // Sends recorded here are kept for good now, so merge by time rather
     // than putting every local row on top.
@@ -5175,7 +5291,8 @@ function ActivityScreen() {
   const C = useColors();
   const styles = useStyles();
   const addr = useWalletAddr();
-  const { items, loading, offline, hydrated, reload } = useActivity(addr);
+  const seed = useWalletSeed();
+  const { items, loading, offline, hydrated, reload } = useActivity(addr, seed);
   const [filter, setFilter] = useState<'All' | 'Sent' | 'Received' | 'Swap'>('All');
   const [detail, setDetail] = useState<ActivityItem | null>(null);
   const shown = filter === 'All' ? items : items.filter(t => txDisplay(t.type).label === filter);
@@ -5234,14 +5351,15 @@ function ActivityScreen() {
           const TxIcon = d.label === 'Sent' ? ArrowUpRight
                        : d.label === 'Received' ? ArrowDownLeft
                        : Repeat;
-          const amount = String(t.amount ?? '').replace(/^[+-]/, '');
-          // Specifics line: direction + counterparty + when.
-          // "To 0x2c2b…72e4 · 3 min ago" / "From litho1…" — falls back
-          // gracefully when the indexer doesn't send a counterparty.
+          const amount = activityAmount(t.amount);
+          // Specifics line: network + direction + counterparty + when.
+          // "Base · To 0x2c2b…72e4 · 3 min ago" / "From litho1…" — falls back
+          // gracefully when the feed doesn't send a counterparty.
           const cp = (t.counterparty ?? '').trim();
           const cpShort = cp.length > 12 ? `${cp.slice(0, 6)}…${cp.slice(-4)}` : cp;
           const cpLine = cp ? `${d.label === 'Received' ? 'From' : 'To'} ${cpShort}` : '';
           const when = relativeTime(t.ts) || (t.status ?? '');
+          const failed = t.status === 'failed';
           return (
             <Pressable key={t.id || `${i}`} onPress={() => setDetail(t)} accessibilityRole="button" accessibilityHint="Shows the transaction details" style={[styles.row, i < shown.length - 1 && styles.rowBorder]}>
               <View style={[styles.txIcon, { backgroundColor: d.positive ? C.greenDim : C.blueDim }]}>
@@ -5250,14 +5368,14 @@ function ActivityScreen() {
               <View style={styles.rowMid}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Text style={styles.rowSymbol}>{t.title || `${d.label} ${t.symbol}`}</Text>
-                  {t.status === 'pending' ? <PendingBadge/> : null}
+                  <StatusBadge status={t.status}/>
                 </View>
                 <Text style={styles.rowSub} numberOfLines={1}>
-                  {cpLine ? `${cpLine}${when ? ` · ${when}` : ''}` : when}
+                  {[activityNetwork(t), cpLine, when].filter(Boolean).join(' · ')}
                 </Text>
               </View>
               <View style={styles.rowRight}>
-                <Text style={[styles.rowAmt, { color: d.positive ? C.green : C.textPrimary }]}>
+                <Text style={[styles.rowAmt, { color: failed ? C.textMuted : d.positive ? C.green : C.textPrimary }]}>
                   {d.positive ? '+' : ''}{amount} {t.symbol}
                 </Text>
                 {t.txHash ? (
@@ -7457,7 +7575,7 @@ function TokenDetailScreen({ sym, chainId, goBack, onSend, onReceive, onSwap }: 
   const addr = useWalletAddr();
   const seed = useWalletSeed();
   const { assets } = usePortfolio(addr, seed);
-  const { items, loading: actLoading, offline: actOffline } = useActivity(addr);
+  const { items, loading: actLoading, offline: actOffline } = useActivity(addr, seed);
   // Prefer an exact (symbol + chain) match — a symbol can exist on several
   // networks (USDT/USDC on every EVM chain, LITHO on Mainnet and on a custom
   // network), so matching by symbol alone resolved to whichever came first,
@@ -7502,7 +7620,10 @@ function TokenDetailScreen({ sym, chainId, goBack, onSend, onReceive, onSwap }: 
     fetchTokenMarketDetails(sym).then(d => { if (!cancel) setMarket(d); }).catch(() => {});
     return () => { cancel = true; };
   }, [sym]);
-  const rows = items.filter(t => t.symbol.toLowerCase() === sym.toLowerCase()).slice(0, 8);
+  // This coin's network only — ETH, USDT and USDC are on several, and the
+  // history now covers them all. (BTC/SOL/ATOM coins carry chainId 0.)
+  const rows = items.filter(t => t.symbol.toLowerCase() === sym.toLowerCase()
+    && (!coin?.chainId || t.chainId == null || t.chainId === coin.chainId)).slice(0, 8);
   const W = 340, H = 150;
   const up = (hist?.changePct ?? 0) >= 0;
   const svg = hist?.hasRealData ? tdChartSvg(hist.prices, W, H, up ? C.green : C.red) : null;
@@ -7612,7 +7733,7 @@ function TokenDetailScreen({ sym, chainId, goBack, onSend, onReceive, onSwap }: 
               <View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Text style={{ color: C.textPrimary, fontWeight: '600', fontSize: 13 }}>{d.label}</Text>
-                  {t.status === 'pending' ? <PendingBadge/> : null}
+                  <StatusBadge status={t.status}/>
                 </View>
                 <Text style={{ color: C.textMuted, fontSize: 11 }}>{t.ts ? new Date(t.ts).toLocaleDateString() : '—'}</Text>
               </View>
@@ -7622,8 +7743,8 @@ function TokenDetailScreen({ sym, chainId, goBack, onSend, onReceive, onSwap }: 
                     (lep100-sync buildSeedActivity). Render as-is; re-decoding
                     here would divide an already-formatted "5" by 10^18. */}
                 {t.status === 'pending'
-                  ? `-${String(t.amount).replace(/^[+-]/, '')}`
-                  : `${d.positive ? '+' : '-'}${String(t.amount).replace(/^[+-]/, '')}`} {sym}
+                  ? `-${activityAmount(t.amount)}`
+                  : `${d.positive ? '+' : '-'}${activityAmount(t.amount)}`} {sym}
               </Text>
             </View>
           );
