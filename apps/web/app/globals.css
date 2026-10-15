@@ -938,6 +938,17 @@ button:focus:not(:focus-visible),
   border-radius: 7px; padding: 4px 9px;
   font-size: 13px; font-weight: 600; color: var(--text-secondary);
 }
+select.chart-selector, button.chart-selector { cursor: pointer; font-family: inherit; }
+button.chart-selector:disabled { opacity: 0.45; cursor: default; }
+
+/* Pager under a transaction list (components/history-paging.tsx). */
+.pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 12px 0 0; margin-top: 4px; border-top: 1px solid var(--border-subtle);
+  font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.table-card .pager { padding: 10px 12px; margin-top: 0; }
+.pager-buttons { display: flex; align-items: center; gap: 8px; }
 .chart-xaxis {
   display: flex; justify-content: space-between;
   padding: 6px 0 0;

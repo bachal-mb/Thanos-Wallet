@@ -33,6 +33,10 @@ import {
 } from '../lib/custom-assets';
 import { historyAddresses, pendingActivityRows, resolvePendingTxs, syncExplorerHistory } from '../lib/tx-store';
 import { TransactionDetailModal } from './TransactionDetailModal';
+import { inPeriod, Pager, PeriodSelect, periodLabel, type HistoryPeriod } from './history-paging';
+
+/** Payment history rows per page. */
+const HISTORY_PAGE = 6;
 
 import { TOKENS } from '../lib/tokens';
 import { isCoinVisible } from '../lib/asset-visibility';
@@ -44,9 +48,13 @@ function projectActivity(item: IndexerActivityItem & { local?: boolean }) {
   // optimistic rows store the amount as the user typed it. So no formatUnits
   // decode here — just prettify with thousands separators when it's numeric.
   const asNum = Number(item.amount);
-  const amountStr = Number.isFinite(asNum)
-    ? asNum.toLocaleString('en-US', { maximumFractionDigits: 6 })
-    : item.amount;
+  // Dust (explorer history reports every wei) keeps 2 significant digits
+  // instead of rounding to "0".
+  const amountStr = !Number.isFinite(asNum)
+    ? item.amount
+    : asNum > 0 && asNum < 0.000001
+      ? asNum.toLocaleString('en-US', { maximumSignificantDigits: 2 })
+      : asNum.toLocaleString('en-US', { maximumFractionDigits: 6 });
   const isOut = item.type === 'send' || item.type === 'burn';
   return {
     sym:    item.symbol,
@@ -587,11 +595,16 @@ export function Dashboard() {
 
   const TXS = useMemo(() => {
     // The wallet's history: its sends plus every network's explorer (the
-    // Makalu-only indexer feed is gone). Cap at 6 like before.
-    return pendingActivityRows([]).map(projectActivity).slice(0, 6);
+    // Makalu-only indexer feed is gone) — all of it, paged below.
+    return pendingActivityRows([]).map(projectActivity);
     // pendingTick forces re-eval after a send / on the interval.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingTick]);
+  const [histPeriod, setHistPeriod] = useState<HistoryPeriod>('all');
+  const [histPage, setHistPage] = useState(0);
+  const histRows = useMemo(() => TXS.filter((tx) => inPeriod(tx.item.ts, histPeriod)), [TXS, histPeriod]);
+  // A shorter list (new filter, rows settling) can leave the page past the end.
+  const histPageShown = Math.min(histPage, Math.max(0, Math.ceil(histRows.length / HISTORY_PAGE) - 1));
 
   // Hidden networks/assets drop out of the total too — consistent with the
   // list filtering above and the other clients (a hidden holding shouldn't
@@ -1140,7 +1153,7 @@ export function Dashboard() {
           <div className="card">
             <div className="table-top">
               <span className="card-title">Payment history</span>
-              <button className="chart-selector">Last month ▾</button>
+              <PeriodSelect value={histPeriod} onChange={(p) => { setHistPeriod(p); setHistPage(0); }}/>
             </div>
             <table className="data-table">
               <thead><tr>
@@ -1148,7 +1161,12 @@ export function Dashboard() {
                 <th style={{ textAlign: 'right' }}>Amount</th>
               </tr></thead>
               <tbody>
-                {TXS.map((tx, i) => (
+                {histRows.length === 0 && (
+                  <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '18px 10px' }}>
+                    No transactions in the {periodLabel(histPeriod).toLowerCase()}.
+                  </td></tr>
+                )}
+                {histRows.slice(histPageShown * HISTORY_PAGE, (histPageShown + 1) * HISTORY_PAGE).map((tx, i) => (
                   <tr key={i} onClick={() => setTxDetail(tx.item)} style={{ cursor: 'pointer' }}>
                     <td>
                       <div className="tx-cell">
@@ -1177,6 +1195,7 @@ export function Dashboard() {
                 ))}
               </tbody>
             </table>
+            <Pager page={histPageShown} pageSize={HISTORY_PAGE} total={histRows.length} onPage={setHistPage}/>
           </div>
         )}
 

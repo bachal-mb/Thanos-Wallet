@@ -2679,6 +2679,101 @@ function SecurityPanel({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
 }
 
+/* Payment history: every network's explorer fills it now, so it filters by
+   period and pages 6 rows at a time instead of showing only the newest 6
+   (client 2026-10-15). Same as the web dashboard. */
+type HistoryPeriod = 'all' | '7d' | '30d' | '90d';
+const HISTORY_PERIODS: Array<[HistoryPeriod, string, number]> = [
+  ['all', 'All time', 0], ['7d', 'Last 7 days', 7], ['30d', 'Last 30 days', 30], ['90d', 'Last 90 days', 90],
+];
+const HISTORY_PAGE = 6;
+
+/** A row without a time (a send still being broadcast) counts as now. */
+function inHistoryPeriod(ts: string | undefined, p: HistoryPeriod): boolean {
+  const days = HISTORY_PERIODS.find(([id]) => id === p)?.[2] ?? 0;
+  if (!days) return true;
+  const t = ts ? Date.parse(ts) : Date.now();
+  return !Number.isFinite(t) || Date.now() - t <= days * 86_400_000;
+}
+
+function PaymentHistoryCard({ activity, loading, onOpen }: { activity: DisplayTx[]; loading: boolean; onOpen: (tx: DisplayTx) => void }) {
+  const [period, setPeriod] = useState<HistoryPeriod>('all');
+  const [page, setPage] = useState(0);
+  const rows = useMemo(() => activity.filter((tx) => inHistoryPeriod(tx.rawTs, period)), [activity, period]);
+  const pages = Math.max(1, Math.ceil(rows.length / HISTORY_PAGE));
+  // A shorter list (new filter, rows settling) can leave the page past the end.
+  const shown = Math.min(page, pages - 1);
+  const periodName = HISTORY_PERIODS.find(([id]) => id === period)?.[1] ?? 'All time';
+  return (
+    <div className="card">
+      <div className="table-top">
+        <span className="card-title">Payment history</span>
+        {activity.length > 0 && (
+          <select className="chart-selector" aria-label="Show transactions from" value={period}
+            onChange={(e) => { setPeriod(e.target.value as HistoryPeriod); setPage(0); }}>
+            {HISTORY_PERIODS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        )}
+      </div>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Status</th>
+            <th style={{ textAlign: 'right' }}>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(shown * HISTORY_PAGE, (shown + 1) * HISTORY_PAGE).map((tx) => (
+            <tr key={tx.id} onClick={() => onOpen(tx)} style={{ cursor: 'pointer' }}>
+              <td>
+                <div className="tx-cell">
+                  <TokenAvatar sym={tx.sym} color={tx.color} className="tx-avatar" label={tx.sym.slice(0, 2)}/>
+                  <div>
+                    <div className="tx-name">{tx.name}</div>
+                    <div className="tx-sym">{tx.sym}</div>
+                  </div>
+                </div>
+              </td>
+              <td>{tx.date}</td>
+              <td>
+                {tx.pending
+                  ? <PendingBadge/>
+                  : (
+                    <span className={`status-pill status-${tx.status.toLowerCase()}`}>
+                      <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }}/>
+                      {tx.status}
+                    </span>
+                  )}
+              </td>
+              <td style={{ textAlign: 'right' }}>
+                <span className={tx.pos ? 'amt-pos' : 'amt-neg'}>{tx.amount}</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!loading && activity.length === 0 && (
+        <div style={{ padding: 14, fontSize: 12, color: 'var(--text-muted)' }}>No transactions yet.</div>
+      )}
+      {activity.length > 0 && rows.length === 0 && (
+        <div style={{ padding: 14, fontSize: 12, color: 'var(--text-muted)' }}>No transactions in the {periodName.toLowerCase()}.</div>
+      )}
+      {pages > 1 && (
+        <div className="pager">
+          <span>{shown * HISTORY_PAGE + 1}–{Math.min(rows.length, (shown + 1) * HISTORY_PAGE)} of {rows.length}</span>
+          <div className="pager-buttons">
+            <button type="button" className="chart-selector" disabled={shown === 0} onClick={() => setPage(shown - 1)}>‹ Previous</button>
+            <span>Page {shown + 1} of {pages}</span>
+            <button type="button" className="chart-selector" disabled={shown >= pages - 1} onClick={() => setPage(shown + 1)}>Next ›</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DashboardView({ onAction, liveLitho, onOpenSettings }: { onAction: (a: 'send'|'receive'|'swap') => void; liveLitho: string | null; onOpenSettings: () => void }) {
   const openDapp = useOpenDapp();
   const { coins, activity, totalUsd, loading } = usePortfolioCtx();
@@ -2759,54 +2854,7 @@ function DashboardView({ onAction, liveLitho, onOpenSettings }: { onAction: (a: 
           already shows the user's real history, and fake financials in a
           wallet erode trust faster than an empty slot does. */}
 
-      {/* Payment history */}
-      <div className="card">
-        <div className="table-top">
-          <span className="card-title">Payment history</span>
-        </div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Date</th>
-              <th>Status</th>
-              <th style={{ textAlign: 'right' }}>Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {activity.slice(0, 6).map((tx) => (
-              <tr key={tx.id} onClick={() => setTxDetail(tx)} style={{ cursor: 'pointer' }}>
-                <td>
-                  <div className="tx-cell">
-                    <TokenAvatar sym={tx.sym} color={tx.color} className="tx-avatar" label={tx.sym.slice(0, 2)}/>
-                    <div>
-                      <div className="tx-name">{tx.name}</div>
-                      <div className="tx-sym">{tx.sym}</div>
-                    </div>
-                  </div>
-                </td>
-                <td>{tx.date}</td>
-                <td>
-                  {tx.pending
-                    ? <PendingBadge/>
-                    : (
-                      <span className={`status-pill status-${tx.status.toLowerCase()}`}>
-                        <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }}/>
-                        {tx.status}
-                      </span>
-                    )}
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <span className={tx.pos ? 'amt-pos' : 'amt-neg'}>{tx.amount}</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!loading && activity.length === 0 && (
-          <div style={{ padding: 14, fontSize: 12, color: 'var(--text-muted)' }}>No transactions yet.</div>
-        )}
-      </div>
+      <PaymentHistoryCard activity={activity} loading={loading} onOpen={setTxDetail}/>
       {txDetail && <TxDetailModal tx={txDetail} onClose={() => setTxDetail(null)} />}
     </>
   );

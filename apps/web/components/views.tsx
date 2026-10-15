@@ -36,6 +36,7 @@ import { TokenDetailModal } from './TokenDetailModal';
 import { getHiddenNetworks, toggleNetworkVisibility, ALL_NETWORKS } from '../lib/asset-visibility';
 import * as customAssets from '../lib/custom-assets';
 import { TransactionDetailModal } from './TransactionDetailModal';
+import { inPeriod, Pager, PeriodSelect, periodLabel, type HistoryPeriod } from './history-paging';
 import { forgetQuanttSession } from '../lib/quantt';
 
 /* Lithosphere rows shown at the top of the Market view. Prices come
@@ -464,6 +465,9 @@ function activityToRow(item: IndexerActivityItem) {
   };
 }
 
+/** Transactions page rows per page. */
+const TX_PAGE = 20;
+
 export function TransactionsView() {
   useDisplayCurrency();
   const wallet = useWallet();
@@ -518,19 +522,24 @@ export function TransactionsView() {
   // Keep the raw item beside its display row so a click can open the detail
   // modal (which needs hash/counterparty/ts, not the formatted row).
   const rows = live.map(item => ({ ...activityToRow(item), item }));
-  const filtered = filter === 'All' ? rows : rows.filter(t => t.type === filter);
+  const [period, setPeriod] = useState<HistoryPeriod>('all');
+  const [page, setPage] = useState(0);
+  const filtered = rows.filter(t => (filter === 'All' || t.type === filter) && inPeriod(t.item.ts, period));
+  // A shorter list (new filter, rows settling) can leave the page past the end.
+  const pageShown = Math.min(page, Math.max(0, Math.ceil(filtered.length / TX_PAGE) - 1));
   const [detail, setDetail] = useState<IndexerActivityItem | null>(null);
   return (
     <div className="main-area" style={{ width: '100%' }}>
       <div className="page-wrap">
         <div className="page-header">
           <h1 className="page-title">Transactions</h1>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', gap: 6 }}>
               {(['All','Send','Receive','Swap'] as const).map(f => (
-                <button key={f} className={`filter-pill ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>{f}</button>
+                <button key={f} className={`filter-pill ${filter === f ? 'active' : ''}`} onClick={() => { setFilter(f); setPage(0); }}>{f}</button>
               ))}
             </div>
+            <PeriodSelect value={period} onChange={(p) => { setPeriod(p); setPage(0); }}/>
           </div>
         </div>
         {/* Pending section — appears above the main table when there are
@@ -627,7 +636,12 @@ export function TransactionsView() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((tx, i) => (
+              {filtered.length === 0 && (
+                <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '18px 10px' }}>
+                  {period === 'all' ? 'No transactions yet.' : `No transactions in the ${periodLabel(period).toLowerCase()}.`}
+                </td></tr>
+              )}
+              {filtered.slice(pageShown * TX_PAGE, (pageShown + 1) * TX_PAGE).map((tx, i) => (
                 <tr key={i} onClick={() => setDetail(tx.item)} style={{ cursor: 'pointer' }}>
                   <td>
                     <div className="tx-cell">
@@ -654,6 +668,7 @@ export function TransactionsView() {
               ))}
             </tbody>
           </table>
+          <Pager page={pageShown} pageSize={TX_PAGE} total={filtered.length} onPage={setPage}/>
         </div>
       </div>
       {detail && <TransactionDetailModal item={detail} onClose={() => setDetail(null)} />}

@@ -465,6 +465,16 @@ button { font-family: inherit; cursor: pointer; color: inherit; }
   border-radius: 7px; padding: 4px 9px;
   font-size: 11px; font-weight: 600; color: var(--text-secondary);
 }
+select.chart-selector, button.chart-selector { cursor: pointer; font-family: inherit; }
+button.chart-selector:disabled { opacity: 0.45; cursor: default; }
+
+/* Pager under Payment history (PaymentHistoryCard in main.tsx). */
+.pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 10px 0 0; margin-top: 4px; border-top: 1px solid var(--border-subtle);
+  font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.pager-buttons { display: flex; align-items: center; gap: 8px; }
 .chart-xaxis {
   display: flex; justify-content: space-between;
   padding: 6px 0 0;
