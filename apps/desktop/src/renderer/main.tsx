@@ -6309,6 +6309,15 @@ function App() {
   // The account shows by its Lithosphere address, litho1…; the 0x form is
   // the secondary "EVM address" (client 2026-10-15: "make litho1 first class").
   const walletLitho = lithoDisplayAddr(walletAddr, LITHO_MAINNET);
+  // The account menu lists only the accounts to switch TO (client
+  // 2026-10-15: the active account isn't repeated in its own switcher); the
+  // active one's rename/delete sit by its name in the menu header.
+  const visibleAccts  = accountMenu && walletSeed.length > 0 ? getVisibleAccountIndices() : [];
+  const otherAccounts = pkWallet ? [] : visibleAccts.filter(i => i !== activeIdx);
+  // A wallet must keep one account, so the last can't be removed — shown
+  // disabled rather than hidden, or the feature looks absent.
+  const lastAccount   = visibleAccts.length <= 1;
+  const canAddAccount = !pkWallet && accountCount < MAX_ACCOUNTS;
   const portfolio  = usePortfolio(walletAddr, walletSeed);
 
   useEffect(() => {
@@ -6486,7 +6495,9 @@ function App() {
                 </svg>
               </div>
               <div className="chip-info">
-                <span className="chip-name">{walletSeed.length > 0 ? `Account ${activeIdx + 1}` : ACCOUNT.name}</span>
+                <span className="chip-name" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {walletSeed.length > 0 ? getAccountName(activeIdx) : ACCOUNT.name}
+                </span>
                 <span className="chip-addr"><HiAddr value={walletLitho || shortAddr} head={8} tail={6}/></span>
               </div>
               <ChevDown size={11} color="var(--text-muted)"/>
@@ -6503,8 +6514,36 @@ function App() {
                         <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
                       </svg>
                     </div>
-                    <div>
-                      <div className="menu-name">{walletSeed.length > 0 ? `Account ${activeIdx + 1}` : ACCOUNT.name}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <div className="menu-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 4 }}>
+                          {walletSeed.length > 0 ? getAccountName(activeIdx) : ACCOUNT.name}
+                        </div>
+                        {walletSeed.length > 0 && (
+                          <>
+                            <button
+                              onClick={() => { renameAccount(activeIdx); setAccountMenu(false); }}
+                              title="Rename account"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex', flexShrink: 0 }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                            </button>
+                            <button
+                              onClick={() => { if (!lastAccount) { void deleteAccount(activeIdx); setAccountMenu(false); } }}
+                              disabled={lastAccount}
+                              title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
+                              style={{
+                                background: 'none', border: 'none', padding: 3, display: 'flex', flexShrink: 0,
+                                cursor: lastAccount ? 'not-allowed' : 'pointer',
+                                color: lastAccount ? 'var(--text-muted)' : '#f87171',
+                                opacity: lastAccount ? 0.45 : 1,
+                              }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
+                            </button>
+                          </>
+                        )}
+                      </div>
                       <div className="menu-addr" title={walletLitho}><HiAddr value={walletLitho} head={8} tail={6}/></div>
                     </div>
                   </div>
@@ -6549,20 +6588,18 @@ function App() {
 
                   {/* Multi-account switcher — mnemonic wallets only.
                       Reads from + writes to localStorage so a refresh
-                      preserves the selection. */}
-                  {walletSeed.length > 0 && (
+                      preserves the selection. Only the OTHER accounts are
+                      listed (the active one is the header above), so a
+                      single-account wallet shows just "Add account". */}
+                  {walletSeed.length > 0 && (otherAccounts.length > 0 || canAddAccount) && (
                     <>
                       <div className="menu-divider"/>
-                      {getVisibleAccountIndices().map((i) => {
-                        // A wallet must keep one account, so the last can't be
-                        // removed — rendered disabled rather than hidden, or the
-                        // feature looks absent to single-account users.
-                        const lastAccount = getVisibleAccountIndices().length <= 1;
+                      {otherAccounts.map((i) => {
                         return (
                           <div
                             key={i}
                             className="menu-item"
-                            style={{ display: 'flex', alignItems: 'center', gap: 6, ...(i === activeIdx ? { fontWeight: 700 } : {}) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                           >
                             <button
                               onClick={() => { switchAccount(i); setAccountMenu(false); }}
@@ -6579,7 +6616,6 @@ function App() {
                               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {getAccountName(i)}
                               </span>
-                              {i === activeIdx && <span style={{ marginLeft: 'auto', color: 'var(--blue)' }}>●</span>}
                             </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); renameAccount(i); setAccountMenu(false); }}
@@ -6604,7 +6640,7 @@ function App() {
                           </div>
                         );
                       })}
-                      {!pkWallet && accountCount < MAX_ACCOUNTS && (
+                      {canAddAccount && (
                         <button
                           className="menu-item"
                           onClick={() => { addAccount(); setAccountMenu(false); }}

@@ -2817,7 +2817,7 @@ function HomeScreen({
   onRenameAccount: (idx: number) => void;
   onDeleteAccount: (idx: number) => void;
 }) {
-  const { coins: allCoins, loading, offline } = usePortfolioCtx();
+  const { coins: allCoins, loading, offline, address } = usePortfolioCtx();
   // Networks/assets hidden in Settings never reach this list or the total —
   // see lib/asset-visibility's header note (Send/Receive/detail navigation
   // stay unaffected; this is a portfolio-VIEW preference only).
@@ -2830,6 +2830,16 @@ function HomeScreen({
     () => coins.filter(c => c.balance > 0 && c.usdValue > 0).map(c => ({ sym: c.sym, qty: c.balance, usd: c.usdValue })),
     [coins],
   );
+  // The switcher heads with the active account (name, litho1 address,
+  // rename/delete) and lists only the OTHER accounts to switch to (client
+  // 2026-10-15: the active account isn't repeated in its own switcher).
+  const acctLitho = address ? lithoDisplayAddr(address, LITHO_MAINNET_ID) : '';
+  const visibleAccts = acctMenu ? getVisibleAccountIndices() : [];
+  const otherAccounts = visibleAccts.filter(i => i !== activeIdx);
+  // A wallet must keep one account, so the last one can't go. Rendered
+  // disabled rather than hidden — hiding it made the feature look absent
+  // to anyone with a single account.
+  const lastAccount = visibleAccts.length <= 1;
   return (
     <div className="screen">
       <div className="screen-header">
@@ -2840,7 +2850,7 @@ function HomeScreen({
           <div className="acct-chip" onClick={() => setAcctMenu(v => !v)}>
             <div className="acct-avatar"><User size={13}/></div>
             <div>
-              <div className="acct-name">Account {activeIdx + 1}</div>
+              <div className="acct-name" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAccountName(activeIdx)}</div>
               <div className="acct-addr">
                 {offline ? 'Offline' : wallets.length > 1 ? (wallets.find(w => w.id === activeWalletId)?.name ?? 'Synced') : 'Synced'}
               </div>
@@ -2885,60 +2895,93 @@ function HomeScreen({
                     ))}
                   </div>
                 )}
-                {getVisibleAccountIndices().map((i) => {
-                  // A wallet must keep one account, so the last one can't go.
-                  // Rendered disabled rather than hidden — hiding it made the
-                  // feature look absent to anyone with a single account.
-                  const lastAccount = getVisibleAccountIndices().length <= 1;
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        display: 'flex', width: '100%', alignItems: 'center', gap: 4,
-                        padding: '4px 6px', borderRadius: 6,
-                        background: i === activeIdx ? 'var(--bg-hover)' : 'transparent',
-                      }}
-                    >
-                      <button
-                        onClick={() => { onSwitch(i); setAcctMenu(false); }}
-                        style={{
-                          display: 'flex', flex: 1, alignItems: 'center', gap: 8, minWidth: 0,
-                          padding: '4px 4px', border: 'none', borderRadius: 6, background: 'transparent',
-                          color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left',
-                          fontSize: 12, fontWeight: i === activeIdx ? 700 : 500,
-                        }}
-                      >
-                        <User size={12}/>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {getAccountName(i)}
-                        </span>
-                        {i === activeIdx && <span style={{ marginLeft: 'auto', color: 'var(--blue)' }}>●</span>}
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onRenameAccount(i); setAcctMenu(false); }}
-                        title="Rename account"
-                        aria-label={`Rename ${getAccountName(i)}`}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex' }}
-                      >
-                        <Pencil size={11}/>
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); if (!lastAccount) { onDeleteAccount(i); setAcctMenu(false); } }}
-                        disabled={lastAccount}
-                        title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
-                        aria-label={`Delete ${getAccountName(i)}`}
-                        style={{
-                          background: 'none', border: 'none', padding: 3, display: 'flex',
-                          cursor: lastAccount ? 'not-allowed' : 'pointer',
-                          color: lastAccount ? 'var(--text-muted)' : '#f87171',
-                          opacity: lastAccount ? 0.45 : 1,
-                        }}
-                      >
-                        <Trash2 size={11}/>
-                      </button>
+                {/* Active account: name + litho1 address, with its own
+                    rename/delete (it isn't repeated in the list below). */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 6px 6px 10px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {getAccountName(activeIdx)}
                     </div>
-                  );
-                })}
+                    {acctLitho && (
+                      <div title={acctLitho} style={{ display: 'flex', alignItems: 'center', fontSize: 10, color: 'var(--text-muted)', fontFamily: "'Geist Mono', monospace", marginTop: 2 }}>
+                        {shortTxAddr(acctLitho)}
+                        <TxCopyBtn value={acctLitho} what="address"/>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { onRenameAccount(activeIdx); setAcctMenu(false); }}
+                    title="Rename account"
+                    aria-label={`Rename ${getAccountName(activeIdx)}`}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex' }}
+                  >
+                    <Pencil size={11}/>
+                  </button>
+                  <button
+                    onClick={() => { if (!lastAccount) { onDeleteAccount(activeIdx); setAcctMenu(false); } }}
+                    disabled={lastAccount}
+                    title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
+                    aria-label={`Delete ${getAccountName(activeIdx)}`}
+                    style={{
+                      background: 'none', border: 'none', padding: 3, display: 'flex',
+                      cursor: lastAccount ? 'not-allowed' : 'pointer',
+                      color: lastAccount ? 'var(--text-muted)' : '#f87171',
+                      opacity: lastAccount ? 0.45 : 1,
+                    }}
+                  >
+                    <Trash2 size={11}/>
+                  </button>
+                </div>
+                {otherAccounts.length > 0 && (
+                  <div style={{ borderTop: '1px solid var(--border-default)', marginTop: 4, paddingTop: 4 }}>
+                    {otherAccounts.map((i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex', width: '100%', alignItems: 'center', gap: 4,
+                          padding: '4px 6px', borderRadius: 6,
+                        }}
+                      >
+                        <button
+                          onClick={() => { onSwitch(i); setAcctMenu(false); }}
+                          style={{
+                            display: 'flex', flex: 1, alignItems: 'center', gap: 8, minWidth: 0,
+                            padding: '4px 4px', border: 'none', borderRadius: 6, background: 'transparent',
+                            color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left',
+                            fontSize: 12, fontWeight: 500,
+                          }}
+                        >
+                          <User size={12}/>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {getAccountName(i)}
+                          </span>
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onRenameAccount(i); setAcctMenu(false); }}
+                          title="Rename account"
+                          aria-label={`Rename ${getAccountName(i)}`}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex' }}
+                        >
+                          <Pencil size={11}/>
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (!lastAccount) { onDeleteAccount(i); setAcctMenu(false); } }}
+                          disabled={lastAccount}
+                          title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
+                          aria-label={`Delete ${getAccountName(i)}`}
+                          style={{
+                            background: 'none', border: 'none', padding: 3, display: 'flex',
+                            cursor: lastAccount ? 'not-allowed' : 'pointer',
+                            color: lastAccount ? 'var(--text-muted)' : '#f87171',
+                            opacity: lastAccount ? 0.45 : 1,
+                          }}
+                        >
+                          <Trash2 size={11}/>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <button
                   onClick={() => { onAdd(); setAcctMenu(false); }}
                   style={{

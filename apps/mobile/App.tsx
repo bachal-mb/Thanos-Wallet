@@ -10190,68 +10190,97 @@ function App() {
                   }}
                 >
                   <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: colors.borderDefault, alignSelf: 'center', marginBottom: 16 }}/>
-                  <Text style={{ color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }}>Account</Text>
-                  <Text style={{ color: colors.textMuted, fontSize: 13, marginTop: 2, marginBottom: 16 }}>
-                    {`Active · ${getAccountName(isPrivateKeyWallet(walletSeed) ? 0 : activeIdx)}`}
-                  </Text>
-
-                  {(isPrivateKeyWallet(walletSeed) ? [0] : visibleAccounts).map((i) => {
-                    const a = accountAddresses[i];
+                  {/* The active account heads the sheet with its own rename/
+                      delete; the list below holds only the OTHER accounts
+                      (client 2026-10-15: the active account isn't repeated in
+                      its own switcher). */}
+                  {(() => {
+                    const pk = isPrivateKeyWallet(walletSeed);
+                    const cur = pk ? 0 : activeIdx;
                     // The account's litho1 address (its 0x is in Settings and
                     // Receive, as the secondary "EVM address").
-                    const tag = a ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : '';
-                    const active = i === (isPrivateKeyWallet(walletSeed) ? 0 : activeIdx);
-                    return (
+                    const curTag = walletSeed.length > 0 ? shortRowAddr(displayAddr(walletAddr, LITHO_CHAIN_ID)) : '';
+                    // A wallet must keep one account — delete stays visible
+                    // but dimmed on the last one, with the reason in the alert.
+                    const lastAccount = visibleAccounts.length <= 1;
+                    const others = pk ? [] : visibleAccounts.filter((i) => i !== cur);
+                    const renameBtn = (i: number) => (
                       <Pressable
-                        key={i}
-                        onPress={() => { switchAccount(i); setAcctSheetOpen(false); }}
-                        style={({ pressed }) => [{
-                          flexDirection: 'row', alignItems: 'center', gap: 12,
-                          padding: 14, borderRadius: 14, marginBottom: 8,
-                          backgroundColor: active ? colors.blueDim : colors.bgElevated,
-                          borderWidth: 1, borderColor: active ? colors.blue : colors.borderSubtle,
-                        }, pressed && { opacity: 0.85 }]}
+                        hitSlop={10}
+                        onPress={() => openRename(i)}
+                        style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}
+                        accessibilityLabel={`Rename ${getAccountName(i)}`}
                       >
-                        <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: active ? colors.blue : colors.bgCard, alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ color: active ? '#fff' : colors.textSecondary, fontSize: 15, fontWeight: '800' }}>{i + 1}</Text>
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{getAccountName(i)}</Text>
-                          {tag ? (
-                            <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>
-                              {tag}
-                            </Text>
-                          ) : null}
-                        </View>
-                        <Pressable
-                          hitSlop={10}
-                          onPress={() => openRename(i)}
-                          style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}
-                          accessibilityLabel={`Rename ${getAccountName(i)}`}
-                        >
-                          <Pencil size={16} color={active ? colors.blue : colors.textMuted} strokeWidth={2.2}/>
-                        </Pressable>
-                        {/* Delete — always rendered so the feature is visible;
-                            disabled on the last remaining account (a wallet
-                            must keep one) with the reason in the alert. */}
-                        {!isPrivateKeyWallet(walletSeed) && (
-                          <Pressable
-                            hitSlop={10}
-                            onPress={() => void confirmDeleteAccount(i)}
-                            disabled={acctBusy}
-                            style={({ pressed }) => [
-                              { padding: 6, opacity: visibleAccounts.length <= 1 ? 0.4 : 1 },
-                              pressed && { opacity: 0.6 },
-                            ]}
-                            accessibilityLabel={`Delete ${getAccountName(i)}`}
-                          >
-                            <Trash2 size={16} color={visibleAccounts.length <= 1 ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
-                          </Pressable>
-                        )}
-                        {active ? <Check size={20} color={colors.blue} strokeWidth={2.8}/> : null}
+                        <Pencil size={16} color={i === cur ? colors.blue : colors.textMuted} strokeWidth={2.2}/>
                       </Pressable>
                     );
-                  })}
+                    const deleteBtn = (i: number) => (pk ? null : (
+                      <Pressable
+                        hitSlop={10}
+                        onPress={() => void confirmDeleteAccount(i)}
+                        disabled={acctBusy}
+                        style={({ pressed }) => [
+                          { padding: 6, opacity: lastAccount ? 0.4 : 1 },
+                          pressed && { opacity: 0.6 },
+                        ]}
+                        accessibilityLabel={`Delete ${getAccountName(i)}`}
+                      >
+                        <Trash2 size={16} color={lastAccount ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
+                      </Pressable>
+                    ));
+                    return (
+                      <>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                          <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }}>
+                            <Text style={{ color: '#fff', fontSize: 17, fontWeight: '800' }}>{cur + 1}</Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }} numberOfLines={1}>
+                              {getAccountName(cur)}
+                            </Text>
+                            {curTag ? (
+                              <Text style={{ color: colors.textMuted, fontSize: 13, fontFamily: MONO, marginTop: 2 }} numberOfLines={1}>
+                                {curTag}
+                              </Text>
+                            ) : null}
+                          </View>
+                          {renameBtn(cur)}
+                          {deleteBtn(cur)}
+                        </View>
+
+                        {others.map((i) => {
+                          const a = accountAddresses[i];
+                          const tag = a ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : '';
+                          return (
+                            <Pressable
+                              key={i}
+                              onPress={() => { switchAccount(i); setAcctSheetOpen(false); }}
+                              style={({ pressed }) => [{
+                                flexDirection: 'row', alignItems: 'center', gap: 12,
+                                padding: 14, borderRadius: 14, marginBottom: 8,
+                                backgroundColor: colors.bgElevated,
+                                borderWidth: 1, borderColor: colors.borderSubtle,
+                              }, pressed && { opacity: 0.85 }]}
+                            >
+                              <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: colors.bgCard, alignItems: 'center', justifyContent: 'center' }}>
+                                <Text style={{ color: colors.textSecondary, fontSize: 15, fontWeight: '800' }}>{i + 1}</Text>
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{getAccountName(i)}</Text>
+                                {tag ? (
+                                  <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>
+                                    {tag}
+                                  </Text>
+                                ) : null}
+                              </View>
+                              {renameBtn(i)}
+                              {deleteBtn(i)}
+                            </Pressable>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
 
                   {accountCount < MAX_ACCOUNTS && !isPrivateKeyWallet(walletSeed) && (
                     <Pressable

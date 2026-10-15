@@ -63,7 +63,15 @@ export function TopNav({
   const [accountMenu, setAccountMenu] = useState(false);
   const [mobileMenu, setMobileMenu]   = useState(false);
   const showSwitcher = !!onSwitchAccount && accountCount >= 1;
-  const accountLabel = `Account ${activeIdx + 1}`;
+  // Its own name (renamed accounts included), not a fixed "Account N".
+  const accountLabel = getAccountName(activeIdx);
+  // The switcher lists the OTHER accounts — the active one is the menu's
+  // header, with its rename / delete beside its name (client 2026-10-15:
+  // listing it again "seems redundant and confusing").
+  const visibleAccounts = getVisibleAccountIndices();
+  const otherAccounts = visibleAccounts.filter((i) => i !== activeIdx);
+  // A wallet must always keep one account, so the last one can't be removed.
+  const lastAccount = visibleAccounts.length <= 1;
   const [copiedFmt, setCopiedFmt] = useState<'litho' | 'evm' | null>(null);
 
   /* What the chip + dropdown render. Falls back to a friendly placeholder
@@ -157,10 +165,42 @@ export function TopNav({
               <div className="account-menu">
                 <div className="menu-header">
                   <div className="menu-avatar"><User size={24}/></div>
-                  <div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="menu-name">{showSwitcher ? accountLabel : ACCOUNT_NAME}</div>
-                    <div className="menu-addr" title={activeAddr}><Addr value={activeAddr} head={8} tail={6}/></div>
+                    <div className="menu-addr" title={activeAddr} style={{ whiteSpace: 'nowrap' }}><Addr value={activeAddr} head={6} tail={5}/></div>
                   </div>
+                  {showSwitcher && (onRenameAccount || onDeleteAccount) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, alignSelf: 'flex-start' }}>
+                      {onRenameAccount && (
+                        <button
+                          onClick={() => { onRenameAccount(activeIdx); setAccountMenu(false); }}
+                          title="Rename account"
+                          aria-label={`Rename ${accountLabel}`}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4, display: 'flex' }}
+                        >
+                          <Pencil size={13}/>
+                        </button>
+                      )}
+                      {onDeleteAccount && (
+                        <button
+                          onClick={() => { if (lastAccount) return; onDeleteAccount(activeIdx); setAccountMenu(false); }}
+                          disabled={lastAccount}
+                          title={lastAccount
+                            ? 'Your wallet must keep at least one account — add another to delete this one'
+                            : 'Delete account'}
+                          aria-label={`Delete ${accountLabel}`}
+                          style={{
+                            background: 'none', border: 'none', padding: 4, display: 'flex',
+                            cursor: lastAccount ? 'not-allowed' : 'pointer',
+                            color: lastAccount ? 'var(--text-muted)' : 'var(--red, #f87171)',
+                            opacity: lastAccount ? 0.45 : 1,
+                          }}
+                        >
+                          <Trash2 size={13}/>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="menu-network">
                   <span className="menu-net-dot"/>
@@ -201,19 +241,14 @@ export function TopNav({
                 {showSwitcher && (
                   <>
                     <div className="menu-divider"/>
-                    {getVisibleAccountIndices().map((i) => {
+                    {otherAccounts.map((i) => {
                       // Each account by its litho1… address.
                       const a = accountAddresses[i] ? toLithoForm(accountAddresses[i]) : accountAddresses[i];
-                      // A wallet must always keep one account, so the last one
-                      // can't be removed. Render the control DISABLED rather
-                      // than hiding it — hiding made the feature look absent
-                      // to anyone with a single account.
-                      const lastAccount = getVisibleAccountIndices().length <= 1;
                       return (
                         <div
                           key={i}
                           className="menu-item"
-                          style={{ alignItems: 'center', display: 'flex', gap: 8, ...(i === activeIdx ? { fontWeight: 700 } : {}) }}
+                          style={{ alignItems: 'center', display: 'flex', gap: 8 }}
                         >
                           <button
                             onClick={() => { onSwitchAccount?.(i); setAccountMenu(false); }}
@@ -232,7 +267,6 @@ export function TopNav({
                                 </span>
                               )}
                             </span>
-                            {i === activeIdx && <span style={{ marginLeft: 'auto', color: 'var(--blue)' }}>●</span>}
                           </button>
                           {onRenameAccount && (
                             <button
