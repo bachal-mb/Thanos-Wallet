@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { humanSendError } from '@thanos/sdk-core';
 import { TOKENS, SWAP_STABLES, swapPriceUsd, swapRateFor } from '../lib/tokens';
 import { usePrices } from '../lib/usePrices';
 import { useWallet } from './shell/AppShell';
@@ -644,7 +645,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           setTxHash(r.hash);
           setStage('pending');
         } catch (e) {
-          const msg = e instanceof LedgerError ? e.message : (e as Error).message || 'Ledger send failed';
+          const msg = e instanceof LedgerError ? e.message : humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -660,7 +661,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           setTxHash(hash);
           setStage('pending');
         } catch (e) {
-          const msg = e instanceof TrezorError ? e.message : (e as Error).message || 'Trezor send failed';
+          const msg = e instanceof TrezorError ? e.message : humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -697,7 +698,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         setTxHash(hash);
         setStage('pending');
       } catch (e) {
-        const msg = e instanceof BitcoinSendError ? e.message : (e as Error).message || 'Failed to send';
+        const msg = e instanceof BitcoinSendError ? e.message : humanSendError(e);
         setError(msg);
         setStage('failed');
       }
@@ -726,7 +727,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         setTxHash(hash);
         setStage('confirmed');
       } catch (e) {
-        const msg = e instanceof CosmosSendError ? e.message : (e as Error).message || 'Failed to send';
+        const msg = e instanceof CosmosSendError ? e.message : humanSendError(e);
         setError(msg);
         setStage('failed');
       }
@@ -758,7 +759,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           setTxHash(sig);
           setStage('confirmed');
         } catch (e) {
-          const msg = e instanceof LedgerError ? e.message : (e as Error).message || 'Ledger send failed';
+          const msg = e instanceof LedgerError ? e.message : humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -775,7 +776,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           setTxHash(sig);
           setStage('confirmed');
         } catch (e) {
-          const msg = e instanceof TrezorError ? e.message : (e as Error).message || 'Trezor send failed';
+          const msg = e instanceof TrezorError ? e.message : humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -803,7 +804,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
         // implicitly waits for via the connection's preflight commitment.
         setStage('confirmed');
       } catch (e) {
-        const msg = e instanceof SolanaSendError ? e.message : (e as Error).message || 'Failed to send';
+        const msg = e instanceof SolanaSendError ? e.message : humanSendError(e);
         setError(msg);
         setStage('failed');
       }
@@ -860,7 +861,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
             })
             .catch(() => setStage('failed'));
         } catch (e) {
-          const msg = (e as Error).message || 'Ledger EVM send failed';
+          const msg = humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -885,7 +886,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
             })
             .catch(() => setStage('failed'));
         } catch (e) {
-          const msg = e instanceof TrezorError ? e.message : (e as Error).message || 'Trezor EVM send failed';
+          const msg = e instanceof TrezorError ? e.message : humanSendError(e);
           setError(msg);
           setStage('failed');
         }
@@ -917,7 +918,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           })
           .catch(() => setStage('failed'));
       } catch (e) {
-        const msg = e instanceof SendError ? e.message : (e as Error).message || 'Failed to send';
+        const msg = e instanceof SendError ? e.message : humanSendError(e);
         setError(msg);
         setStage('failed');
       }
@@ -967,7 +968,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           })
           .catch(() => setStage('failed'));
       } catch (e) {
-        const msg = (e as Error).message || 'Ledger Kamet send failed';
+        const msg = humanSendError(e);
         setError(msg);
         setStage('failed');
       }
@@ -998,7 +999,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
           })
           .catch(() => setStage('failed'));
       } catch (e) {
-        const msg = e instanceof TrezorError ? e.message : (e as Error).message || 'Trezor Kamet send failed';
+        const msg = e instanceof TrezorError ? e.message : humanSendError(e);
         setError(msg);
         setStage('failed');
       }

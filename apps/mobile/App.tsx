@@ -135,6 +135,7 @@ initSentry();
 import { QrScannerModal } from './components/QrScannerModal';
 import { WalletConnectModal, WalletConnectRequestHost } from './components/WalletConnect';
 import { tokenIconSource, networkIconSource, chainBadgeSource, tokenIconPresentation } from './lib/token-icons';
+import { humanSendError } from './lib/send-errors';
 import {
   fetchChainHistory, historyEvmChainIds, lithoscanTxUrl, type HistoryAddresses, type HistoryResult, type HistoryRow,
 } from './lib/chain-history';
@@ -813,24 +814,9 @@ function relativeTime(iso?: string): string {
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 
-/** Map raw broadcast errors (ethers internals, RPC strings) to actionable
- *  copy. Users must never see internals like FallbackProvider's
- *  "no runners?!" (= every RPC endpoint was unreachable). */
-function humanSendError(e: unknown): string {
-  const raw  = (e as Error)?.message || '';
-  const code = String((e as { code?: unknown })?.code ?? '');
-  const s = `${code} ${raw}`.toLowerCase();
-  if (s.includes('no runners') || code === 'NETWORK_ERROR' || code === 'TIMEOUT'
-      || s.includes('failed to detect network') || s.includes('could not detect network')
-      || s.includes('network error') || s.includes('timeout') || s.includes('abort'))
-    return "Couldn't reach the network. Check your internet connection and try again — nothing left your wallet.";
-  if (code === 'INSUFFICIENT_FUNDS' || s.includes('insufficient funds'))
-    return 'Not enough balance to cover the amount plus the network fee.';
-  if (code === 'NONCE_EXPIRED' || code === 'REPLACEMENT_UNDERPRICED' || s.includes('nonce'))
-    return 'A previous transaction is still settling — wait a few seconds and try again.';
-  if (code === 'ACTION_REJECTED') return 'Transaction cancelled.';
-  return raw || 'Could not broadcast the transaction.';
-}
+/* Raw broadcast errors (ethers internals, RPC strings, "no runners?!") are
+   mapped to actionable copy by humanSendError — lib/send-errors.ts, a twin of
+   sdk-core utils/send-errors.ts. */
 
 /** Map an indexer activity type to a display label + direction. */
 function txDisplay(type: string): { label: string; positive: boolean } {

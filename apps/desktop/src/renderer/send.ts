@@ -11,7 +11,7 @@
  */
 import { createContext, useContext } from 'react';
 import { HDNodeWallet, Wallet, Interface, Mnemonic, Contract, JsonRpcProvider, parseUnits, getAddress } from 'ethers';
-import { lithoToEvm } from '@thanos/sdk-core';
+import { humanSendError, lithoToEvm } from '@thanos/sdk-core';
 import { sendViaLedger, type LedgerConnection } from './ledger-sign';
 import { sendViaTrezor, type TrezorConnection } from './trezor-sign';
 import { getActiveAccountIndex, isPrivateKeyWallet } from './vault';
@@ -157,7 +157,7 @@ export async function sendAsset(args: SendAssetArgs): Promise<string> {
       const msg = (e as Error).message || 'Broadcast failed';
       if (/0x6985/.test(msg))              throw new Error('Rejected on Ledger device');
       if (/insufficient funds/i.test(msg)) throw new Error('Insufficient balance on Ledger account for amount + gas');
-      throw new Error(msg);
+      throw new Error(humanSendError(e));
     }
   }
 
@@ -173,7 +173,7 @@ export async function sendAsset(args: SendAssetArgs): Promise<string> {
       const msg = (e as Error).message || 'Broadcast failed';
       if (/cancelled|rejected|denied/i.test(msg)) throw new Error('Rejected on Trezor device');
       if (/insufficient funds/i.test(msg))        throw new Error('Insufficient balance on Trezor account for amount + gas');
-      throw new Error(msg);
+      throw new Error(humanSendError(e));
     }
   }
 
@@ -210,6 +210,6 @@ export async function sendAsset(args: SendAssetArgs): Promise<string> {
   } catch (e) {
     const msg = (e as Error).message || 'Broadcast failed';
     if (/insufficient funds/i.test(msg)) throw new Error('Insufficient balance for amount + gas');
-    throw new Error(msg);
+    throw new Error(humanSendError(e));
   }
 }

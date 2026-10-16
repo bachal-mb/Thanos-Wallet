@@ -17,6 +17,7 @@ import {
   type Provider, type TransactionResponse,
 } from 'ethers';
 import { estimateMakaluGas } from './gas';
+import { humanSendError } from '@thanos/sdk-core';
 import { getEvmProvider } from './evm-chains';
 import { getEvmChainMerged } from './custom-assets';
 import { resolveToEvm } from './address';
@@ -105,7 +106,7 @@ export async function sendNativeEvm(walletInput: WalletInput, input: NativeSendI
     const msg = (err as Error).message || '';
     if (/insufficient funds/i.test(msg))  throw new SendError('insufficient', `Insufficient ${chain.nativeSymbol} for amount + gas`);
     if (/user rejected/i.test(msg))       throw new SendError('rejected', 'You cancelled the transaction');
-    throw new SendError('rpc_error', msg || 'Network error while broadcasting');
+    throw new SendError('rpc_error', humanSendError(err));
   }
 
   return {
@@ -160,7 +161,7 @@ export async function sendEvmToken(walletInput: WalletInput, input: EvmTokenSend
     if (/transfer amount exceeds balance/i.test(msg)) throw new SendError('insufficient', `Insufficient ${input.symbol} balance`);
     if (/insufficient funds/i.test(msg))              throw new SendError('insufficient', `Insufficient ${chain.nativeSymbol} for gas`);
     if (/user rejected/i.test(msg))                   throw new SendError('rejected', 'You cancelled the transaction');
-    throw new SendError('rpc_error', msg || 'Network error while broadcasting');
+    throw new SendError('rpc_error', humanSendError(err));
   }
 
   return {
@@ -212,7 +213,7 @@ export async function sendLithoNative(
     const msg = (err as Error).message || '';
     if (/insufficient funds/i.test(msg)) throw new SendError('insufficient', 'Insufficient LITHO for amount + gas');
     if (/user rejected/i.test(msg))      throw new SendError('rejected', 'You cancelled the transaction');
-    throw new SendError('rpc_error', msg || 'Network error while broadcasting');
+    throw new SendError('rpc_error', humanSendError(err));
   }
 
   return {
