@@ -113,6 +113,14 @@ https://thanos.fi/privacy is the canonical document.
 ## What's New in this version (release notes, 4,000 chars max)
 
 ```
+• Lithosphere addresses show as litho1… everywhere, and transactions
+  show their Lithosphere hash first, as on LithoScan.
+• Send tells you what to fix when it can’t go ahead yet, and clear
+  messages replace technical errors.
+• Scan a QR code from a photo or screenshot: “Upload QR image” in the
+  scanner. The scanner also says when the camera can’t start.
+• The account switcher lists your other accounts; the current one sits
+  at the top with its rename and delete.
 • Activity now shows every past transaction — including ones made
   before Thanos or from another wallet — on Lithosphere, Ethereum, Base,
   Arbitrum, Polygon, Optimism, Avalanche, Bitcoin, Solana and Cosmos.
