@@ -119,6 +119,14 @@
           "recordAudioAndroid": false
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Thanos uses your photos only to read a QR code image you choose.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
       "expo-notifications",
       [
         "expo-build-properties",

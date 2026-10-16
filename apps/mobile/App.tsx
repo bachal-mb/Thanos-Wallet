@@ -4243,6 +4243,30 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
     chain === 'evm'
       ? !!coin && !!evmNet && (amtNum > 0 || (hexBytes > 0 && amtNum === 0)) && hexOk && !overBalance && !!to && recipientOk && !sending && !simHasCritical
       : amtNum > 0 && !overBalance && !!to && recipientOk && !sending;
+  /** Why Review can't go ahead yet — the first thing to fix, in the order the
+   *  form reads. Shown as a pop-up when the button is tapped. */
+  const reviewProblem: string | null = (() => {
+    if (sending) return null;
+    if (chain === 'evm' && (!coin || !evmNet)) return 'Pick the asset and network to send from.';
+    if (!(amtNum > 0) && !(chain === 'evm' && hexBytes > 0)) return 'Enter the amount to send.';
+    if (overBalance) {
+      return `That’s more than your balance of ${fromBal ? formatAmount(fromBal.balance) : ''} ${reviewSym}. `
+        + 'Leave a little for the network fee.';
+    }
+    if (chain === 'evm' && !hexOk) return 'The data field must be hex, starting with 0x.';
+    if (!to.trim()) return "Enter, paste or scan the recipient's address.";
+    if (!recipientOk) {
+      if (chain !== 'evm') return `That isn’t a valid ${CHAIN_META[chain].label} address.`;
+      return coin?.chainId === 9005
+        ? 'That isn’t a Lithosphere address. Use a litho1… address, a 0x… address or a name.litho.'
+        : `That isn’t a valid ${reviewNetwork} address — it should start with 0x.`;
+    }
+    if (simHasCritical) {
+      return simReport?.issues.find((i) => i.level === 'critical')?.message
+        ?? 'This transfer was flagged as unsafe, so it’s blocked.';
+    }
+    return null;
+  })();
 
   /* Debounced pre-send simulation. Only EVM chains for now — Bitcoin +
      Solana have their own checks elsewhere. */
@@ -4607,8 +4631,16 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
         title="Scan recipient address"
         onClose={() => setScanOpen(false)}
         onResult={(data) => {
-          setTo(parseScannedAddress(data));
           setScanOpen(false);
+          // Say so when the QR isn't an address, rather than filling the
+          // field with whatever text it held (client 2026-10-16).
+          const parsed = parseScannedAddress(data);
+          const looksLikeAddress = /^(0x[0-9a-fA-F]{40}|litho1[0-9a-z]{20,}|cosmos1[0-9a-z]{20,}|bc1[0-9a-z]{20,}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|[1-9A-HJ-NP-Za-km-z]{32,44}|[a-z0-9-]+\.litho)$/i.test(parsed);
+          if (!looksLikeAddress) {
+            Alert.alert('Not a wallet address', "That QR code doesn't contain a wallet address. Scan the recipient's Receive QR code.");
+            return;
+          }
+          setTo(parsed);
         }}
       />
 
@@ -4776,8 +4808,16 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
 
       <Pressable
         style={[styles.btnPrimary, !canReview && { opacity: 0.4 }]}
-        disabled={!canReview}
-        onPress={onReview}
+        disabled={sending}
+        onPress={() => {
+          // Not ready: say why, instead of a button that silently does
+          // nothing (client 2026-10-16).
+          if (!canReview) {
+            if (reviewProblem) Alert.alert('Can’t send yet', reviewProblem);
+            return;
+          }
+          onReview();
+        }}
       >
         <Text style={styles.btnPrimaryText}>
           {sending ? 'Sending…' : simHasCritical ? 'Issue detected — blocked' : 'Review send'}
