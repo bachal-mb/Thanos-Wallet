@@ -23,9 +23,13 @@ const KEY_ACTIVE_IDX = 'thanos.active_account_idx';
 const KEY_ACCT_COUNT = 'thanos.account_count';
 const KEY_ACCT_NAMES = 'thanos.account_names';
 const KEY_ACCT_HIDDEN = 'thanos.account_hidden';
-/** Each wallet's active-account address (public — lets the wallet switcher
- *  show it without decrypting and re-deriving every wallet). { [walletId]: '0x…' } */
-const KEY_WALLET_ADDRS = 'thanos.wallet_addrs';
+/** Public per-wallet metadata — never a secret: how the wallet came in
+ *  (created here / imported) and its accounts' derived 0x addresses, so the
+ *  account sheet can list every wallet's accounts without decrypting and
+ *  re-deriving each one. { [walletId]: { origin?, addrs?: { [idx]: '0x…' } } } */
+const KEY_WALLET_META = 'thanos.wallet_meta';
+/** Superseded by KEY_WALLET_META (one active address per wallet) — removed when seen. */
+const KEY_WALLET_ADDRS_OLD = 'thanos.wallet_addrs';
 const PER_WALLET_KEYS = [KEY_ACTIVE_IDX, KEY_ACCT_COUNT, KEY_ACCT_NAMES, KEY_ACCT_HIDDEN];
 export const MAX_ACCOUNTS = 10;
 export const MAX_ACCOUNT_NAME_LEN = 24;
@@ -40,7 +44,7 @@ let _activeIdx    = 0;
 let _accountCount = 1;
 let _names: Record<number, string> = {};
 let _hidden: number[] = [];
-let _walletAddrs: Record<string, string> = {};
+let _meta: Record<string, WalletMeta> = {};
 let _hydrated     = false;
 // Bumped by every load, so a slower, older load never overwrites a newer one
 // (e.g. the boot hydration finishing after a wallet was already opened).
@@ -65,6 +69,43 @@ function parseHidden(raw: string | null): number[] {
     return arr.filter((n): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < MAX_ACCOUNTS);
   } catch { return []; }
 }
+function parseNames(raw: string | null): Record<number, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const clean: Record<number, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const i = Number.parseInt(k, 10);
+      if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && typeof v === 'string' && v.trim()) {
+        clean[i] = v.trim().slice(0, MAX_ACCOUNT_NAME_LEN);
+      }
+    }
+    return clean;
+  } catch { return {}; }
+}
+const isAddr = (v: unknown): v is string => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v) && !/^0x0{40}$/.test(v);
+function parseMeta(raw: string | null): Record<string, WalletMeta> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, { origin?: unknown; addrs?: Record<string, unknown> }>;
+    const out: Record<string, WalletMeta> = {};
+    for (const [id, m] of Object.entries(parsed)) {
+      if (!m || typeof m !== 'object') continue;
+      const meta: WalletMeta = {};
+      if (m.origin === 'created' || m.origin === 'imported') meta.origin = m.origin;
+      if (m.addrs && typeof m.addrs === 'object') {
+        const addrs: Record<number, string> = {};
+        for (const [k, v] of Object.entries(m.addrs)) {
+          const i = Number.parseInt(k, 10);
+          if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && isAddr(v)) addrs[i] = v;
+        }
+        meta.addrs = addrs;
+      }
+      out[id] = meta;
+    }
+    return out;
+  } catch { return {}; }
+}
 
 /** Hydrate from AsyncStorage. Call once at app start; safe to re-call.
  *  Given a wallet id, the cache switches to that wallet's settings (opening
@@ -78,32 +119,20 @@ export async function loadAccountsFromStorage(walletId?: string): Promise<void> 
   const gen = ++_loadGen;
   const id = _walletId;
   try {
-    const [[, idxRaw], [, countRaw], [, namesRaw], [, hiddenRaw], [, addrsRaw]] = await AsyncStorage.multiGet([
-      ...PER_WALLET_KEYS.map((k) => walletKey(k, id)), KEY_WALLET_ADDRS,
+    const [[, idxRaw], [, countRaw], [, namesRaw], [, hiddenRaw], [, metaRaw], [, oldAddrsRaw]] = await AsyncStorage.multiGet([
+      ...PER_WALLET_KEYS.map((k) => walletKey(k, id)), KEY_WALLET_META, KEY_WALLET_ADDRS_OLD,
     ]);
+    if (oldAddrsRaw !== null) AsyncStorage.removeItem(KEY_WALLET_ADDRS_OLD).catch(() => {});
     if (gen !== _loadGen) return;
     _hidden = parseHidden(hiddenRaw);
     _activeIdx    = parseIntIn(idxRaw, 0, 0, MAX_ACCOUNTS - 1);
     _accountCount = parseIntIn(countRaw, 1, 1, MAX_ACCOUNTS);
-    if (addrsRaw) {
-      try {
-        const parsed = JSON.parse(addrsRaw) as Record<string, unknown>;
-        const clean: Record<string, string> = {};
-        for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v)) clean[k] = v;
-        _walletAddrs = clean;
-      } catch { /* keep what we had */ }
-    }
-    if (namesRaw) {
-      const parsed = JSON.parse(namesRaw) as Record<string, unknown>;
-      const clean: Record<number, string> = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        const i = Number.parseInt(k, 10);
-        if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && typeof v === 'string' && v.trim()) {
-          clean[i] = v.trim().slice(0, MAX_ACCOUNT_NAME_LEN);
-        }
-      }
-      _names = clean;
-    }
+    // Merge: anything recorded in memory since (e.g. by an earlier load's
+    // caller) wins over what was read.
+    const stored = parseMeta(metaRaw);
+    for (const [k, m] of Object.entries(_meta)) stored[k] = { ...stored[k], ...m, addrs: { ...stored[k]?.addrs, ...m.addrs } };
+    _meta = stored;
+    if (namesRaw) _names = parseNames(namesRaw);
   } catch { /* keep defaults */ }
   if (gen === _loadGen) _hydrated = true;
 }
@@ -182,47 +211,90 @@ export function hideAccount(idx: number): boolean {
 
 /* ─── Other wallets in the vault ──────────────────────────────────────── */
 
-/** The listed account indices of any wallet — read from storage for one that
- *  isn't open (the remove-wallet balance check). */
-export async function walletAccountIndices(walletId: string): Promise<number[]> {
-  if (walletId === _walletId) return getVisibleAccountIndices();
+/** A wallet's accounts as the account sheet lists them. */
+export interface WalletAccounts {
+  /** Its active account (the one it opens on). */
+  active: number;
+  /** Listed (not hidden) indices, ascending. */
+  visible: number[];
+  /** How many indices have been provisioned (hidden ones included). */
+  count: number;
+  /** Custom names; the rest are "Account N". */
+  names: Record<number, string>;
+}
+
+/** Any wallet's accounts — the cache for the open one, storage for the others. */
+export async function readWalletAccounts(walletId: string): Promise<WalletAccounts> {
+  if (walletId === _walletId) {
+    return { active: _activeIdx, visible: getVisibleAccountIndices(), count: _accountCount, names: { ..._names } };
+  }
   try {
-    const [[, countRaw], [, hiddenRaw]] = await AsyncStorage.multiGet([walletKey(KEY_ACCT_COUNT, walletId), walletKey(KEY_ACCT_HIDDEN, walletId)]);
-    return visibleOf(parseIntIn(countRaw, 1, 1, MAX_ACCOUNTS), parseHidden(hiddenRaw));
-  } catch { return [0]; }
+    const [[, idxRaw], [, countRaw], [, namesRaw], [, hiddenRaw]] = await AsyncStorage.multiGet(PER_WALLET_KEYS.map((k) => walletKey(k, walletId)));
+    const count = parseIntIn(countRaw, 1, 1, MAX_ACCOUNTS);
+    const visible = visibleOf(count, parseHidden(hiddenRaw));
+    const idx = parseIntIn(idxRaw, 0, 0, MAX_ACCOUNTS - 1);
+    return { active: visible.includes(idx) ? idx : visible[0], visible, count, names: parseNames(namesRaw) };
+  } catch {
+    return { active: 0, visible: [0], count: 1, names: {} };
+  }
 }
 
-/** A wallet's active-account address as last seen (0x), or '' if it hasn't
- *  been opened on this device yet. */
-export function getWalletAddress(walletId: string): string { return _walletAddrs[walletId] ?? ''; }
+/* ─── Public per-wallet metadata (KEY_WALLET_META) ───────────────────────── */
+export type WalletOrigin = 'created' | 'imported';
+interface WalletMeta { origin?: WalletOrigin; addrs?: Record<number, string> }
 
-/** Remember the open wallet's active-account address for the wallet switcher. */
-export function setWalletAddress(walletId: string, address: string): void {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(address) || /^0x0{40}$/.test(address) || _walletAddrs[walletId] === address) return;
-  _walletAddrs = { ..._walletAddrs, [walletId]: address };
-  AsyncStorage.setItem(KEY_WALLET_ADDRS, JSON.stringify(_walletAddrs)).catch(() => {});
+function saveMeta(): void {
+  AsyncStorage.setItem(KEY_WALLET_META, JSON.stringify(_meta)).catch(() => {});
 }
 
-/** Drop a removed wallet's settings (its remembered address included). */
+/** Created in Thanos or imported — unknown for wallets from before this was recorded. */
+export function getWalletOrigin(walletId: string): WalletOrigin | undefined { return _meta[walletId]?.origin; }
+
+export function setWalletOrigin(walletId: string, origin: WalletOrigin): void {
+  if (_meta[walletId]?.origin === origin) return;
+  _meta = { ..._meta, [walletId]: { ..._meta[walletId], origin } };
+  saveMeta();
+}
+
+/** A wallet's known account addresses (0x) by HD index. */
+export function getWalletAddresses(walletId: string): Record<number, string> {
+  return { ..._meta[walletId]?.addrs };
+}
+
+/** Record derived account addresses (merged into what's known; public data). */
+export function setWalletAddresses(walletId: string, addrs: Record<number, string>): void {
+  const known = _meta[walletId]?.addrs ?? {};
+  const next = { ...known };
+  let changed = false;
+  for (const [k, v] of Object.entries(addrs)) {
+    const i = Number(k);
+    if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && isAddr(v) && known[i] !== v) { next[i] = v; changed = true; }
+  }
+  if (!changed) return;
+  _meta = { ..._meta, [walletId]: { ..._meta[walletId], addrs: next } };
+  saveMeta();
+}
+
+/** Drop a removed wallet's settings and metadata. */
 export async function forgetWalletSettings(walletId: string): Promise<void> {
-  if (walletId in _walletAddrs) {
-    const rest = { ..._walletAddrs };
+  if (walletId in _meta) {
+    const rest = { ..._meta };
     delete rest[walletId];
-    _walletAddrs = rest;
-    await AsyncStorage.setItem(KEY_WALLET_ADDRS, JSON.stringify(rest)).catch(() => {});
+    _meta = rest;
+    await AsyncStorage.setItem(KEY_WALLET_META, JSON.stringify(rest)).catch(() => {});
   }
   await AsyncStorage.multiRemove(PER_WALLET_KEYS.map((k) => walletKey(k, walletId))).catch(() => {});
 }
 
 /** Every wallet deleted from the device (lib/vault.ts clearVault): drop the
- *  added wallets' settings and point the cache back at the first wallet,
- *  whose own keys are left exactly as they always were. */
+ *  added wallets' settings and all wallet metadata, and point the cache back
+ *  at the first wallet, whose own keys are left exactly as they always were. */
 export async function forgetAddedWallets(): Promise<void> {
+  _meta = {};
   try {
     const keys = await AsyncStorage.getAllKeys();
     const added = keys.filter((k) => PER_WALLET_KEYS.some((base) => k.startsWith(`${base}@`)));
-    await AsyncStorage.multiRemove([...added, KEY_WALLET_ADDRS]);
+    await AsyncStorage.multiRemove([...added, KEY_WALLET_META, KEY_WALLET_ADDRS_OLD]);
   } catch { /* best-effort */ }
-  _walletAddrs = {};
   await loadAccountsFromStorage(FIRST_WALLET_ID);
 }

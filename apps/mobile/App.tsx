@@ -101,6 +101,7 @@ import {
   isHeavyLegacyKdf, upgradeVaultKdf,
   isSeedBackedUp, setSeedBackedUp,
   openWallet, listWallets, addWallet, switchWallet, renameWallet, removeWallet, readWalletSecret,
+  openAccount, addAccountToWallet,
   MAX_WALLETS, MAX_WALLET_NAME_LEN, type WalletInfo,
 } from './lib/vault';
 import {
@@ -120,7 +121,8 @@ import {
   getVisibleAccountIndices, hideAccount,
   getCustomAccountName,
   MAX_ACCOUNTS, MAX_ACCOUNT_NAME_LEN,
-  FIRST_WALLET_ID, currentWalletId, walletAccountIndices, getWalletAddress, setWalletAddress,
+  FIRST_WALLET_ID, currentWalletId, readWalletAccounts, getWalletAddresses, setWalletAddresses,
+  getWalletOrigin, setWalletOrigin, type WalletAccounts,
 } from './lib/accounts';
 import { discoverFundedAccountCount, deriveAccountAddresses } from './lib/account-discovery';
 import {
@@ -193,7 +195,7 @@ import {
   Users, Trash2, TrendingUp, Image as ImageIcon, BadgeCheck,
   Check, CreditCard, Sparkles, Pencil, MapPin, BookUser, X as XIcon,
   ChevronDown, ChevronUp, Star, History, Scan, Wallet as WalletIcon,
-  RefreshCw, Play, Pause, Square as SquareIcon, ListChecks, Code, ArrowLeftRight,
+  RefreshCw, Play, Pause, Square as SquareIcon, ListChecks, Code, ArrowLeftRight, Ellipsis,
 } from 'lucide-react-native';
 import { ECOSYSTEM_APPS, ECOSYSTEM_HUB, type EcosystemApp, looksLikeUrl, normalizeUrl } from './lib/ecosystem';
 import { discoverAppIcon } from './lib/token-icons';
@@ -451,10 +453,17 @@ interface WalletsApi {
   activeId: string;
   /** Remove a wallet after the funds / backup confirmations. Not for the last one. */
   remove: (id: string) => void;
-  /** Open the account sheet on its wallet list. */
+  /** Open the account sheet (every wallet with its accounts). */
   openSwitcher: () => void;
+  /** Bumped when the sheet asks Settings to run the full delete flow (its
+   *  last wallet's "Remove"); takeFullDelete() consumes that request. */
+  fullDeleteTick: number;
+  takeFullDelete: () => boolean;
 }
-const WalletsCtx = createContext<WalletsApi>({ wallets: [], activeId: FIRST_WALLET_ID, remove: () => {}, openSwitcher: () => {} });
+const WalletsCtx = createContext<WalletsApi>({
+  wallets: [], activeId: FIRST_WALLET_ID, remove: () => {}, openSwitcher: () => {},
+  fullDeleteTick: 0, takeFullDelete: () => false,
+});
 function useWallets(): WalletsApi { return useContext(WalletsCtx); }
 
 /* ─── Wallet & account icons ─────────────────────────────────────────────
@@ -507,6 +516,36 @@ function accountInitials(name: string): string {
   if (words.length === 0) return '?';
   const pick = (w: string) => (/^\d+$/.test(w) ? w : w[0]);
   return words.length === 1 ? pick(words[0]).toUpperCase().slice(0, 2) : (pick(words[0]) + pick(words[1])).toUpperCase().slice(0, 3);
+}
+
+/* Account-sheet sections (client 2026-10-17 — wallets, imported wallets and
+   accounts kept apart, as in MetaMask / Trust Wallet / Phantom): wallets
+   created in Thanos, then imported recovery phrases, then imported private
+   keys. A phrase wallet from before the origin was recorded (an existing
+   install's first wallet) can't be placed, so it sits under "Recovery phrase". */
+const WALLET_GROUPS = [
+  { key: 'created',  title: 'Created in Thanos' },
+  { key: 'phrase',   title: 'Recovery phrase' },
+  { key: 'imported', title: 'Imported · recovery phrase' },
+  { key: 'key',      title: 'Imported · private key' },
+] as const;
+type WalletGroupKey = (typeof WALLET_GROUPS)[number]['key'];
+function walletGroupOf(w: WalletInfo): WalletGroupKey {
+  return w.kind === 'key' ? 'key' : (getWalletOrigin(w.id) ?? 'phrase');
+}
+/** The wallet's type / origin label. */
+function walletOriginLabel(w: WalletInfo): string {
+  return { created: 'Created', phrase: 'Recovery phrase', imported: 'Imported phrase', key: 'Private key' }[walletGroupOf(w)];
+}
+/** Badge colours per section — text ≥5:1 on its tint in both themes. */
+function originBadge(group: WalletGroupKey, dark: boolean): { bg: string; fg: string } {
+  const c = {
+    created:  { rgb: '59,122,247',  d: '#7ea6fa', l: '#1d4fc4' },
+    phrase:   { rgb: '133,133,154', d: '#c4c4d2', l: '#4b4b57' },
+    imported: { rgb: '139,125,247', d: '#b9aef9', l: '#5b48d6' },
+    key:      { rgb: '245,158,11',  d: '#fbbf24', l: '#9a4a06' },
+  }[group];
+  return { bg: `rgba(${c.rgb},${dark ? 0.16 : 0.12})`, fg: dark ? c.d : c.l };
 }
 
 /** A wallet (rounded square, wallet / key glyph) or account (circle,
@@ -6743,6 +6782,10 @@ function SettingsScreen() {
       ],
     );
   };
+  // The account sheet's "Remove" on the last wallet lands here: run this flow.
+  useEffect(() => {
+    if (walletsApi.takeFullDelete()) void deleteWalletFlow();
+  }, [walletsApi.fullDeleteTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Modal flags for the settings actions.
   const [revealOpen, setRevealOpen]     = useState(false);
@@ -8653,6 +8696,7 @@ function OnboardingScreen({
     try {
       await createVault(seed.join(' '), password);
       await openWallet(seed.join(' ')); // the new vault's one wallet; its settings load
+      setWalletOrigin(currentWalletId(), 'created'); // labels it in the account sheet
       await setSeedBackedUp(true); // create flow includes seed verification
       // createVault session-caches the key internally.
       await offerBiometricSetup();
@@ -8697,6 +8741,7 @@ function OnboardingScreen({
     try {
       await createVault(secret, password);
       await openWallet(secret); // the new vault's one wallet; its settings load
+      setWalletOrigin(currentWalletId(), 'imported'); // labels it in the account sheet
       // Imported — the user already holds the phrase (or, for a private key,
       // there's no phrase to back up).
       await setSeedBackedUp(true);
@@ -8715,7 +8760,7 @@ function OnboardingScreen({
     addingRef.current = true;
     setBusy(true);
     try {
-      const r = await addWallet(secret);
+      const r = await addWallet(secret, undefined, kind === 'create' ? 'created' : 'imported');
       if ('error' in r) { Alert.alert('Couldn’t add the wallet', r.error); return; }
       addMode.onAdded(r.wallet.secret);
     } catch {
@@ -10097,9 +10142,9 @@ function App() {
   const [activeIdx, setActiveIdx]            = useState(0);
   const [accountCount, setAccountCountState] = useState(1);
   const [acctSheetOpen, setAcctSheetOpen]    = useState(false);
-  // The account sheet's page: the open wallet's accounts, the wallet list,
-  // or the add-wallet choices.
-  const [sheetView, setSheetView] = useState<'accounts' | 'wallets' | 'add'>('accounts');
+  // The account sheet's page: every wallet with its accounts, or the
+  // add-wallet choices.
+  const [sheetView, setSheetView] = useState<'list' | 'add'>('list');
   // Rename-account dialog (cross-platform — Alert.prompt is iOS-only). The
   // same dialog renames a wallet when renameWalletId is set.
   const [renameIdx, setRenameIdx]     = useState<number | null>(null);
@@ -10147,7 +10192,7 @@ function App() {
     if (Platform.OS === 'ios') afterSheetRef.current = fn;
     else fn();
   };
-  const openAcctSheet = (view: 'accounts' | 'wallets') => { setSheetView(view); setAcctSheetOpen(true); };
+  const openAcctSheet = () => { setSheetView('list'); setAcctSheetOpen(true); };
   useEffect(() => {
     void loadAccountsFromStorage().then(() => {
       setActiveIdx(getActiveAccountIndex());
@@ -10254,10 +10299,91 @@ function App() {
       else Alert.alert('Couldn’t open the wallet', 'Lock and unlock Thanos, then try again.');
     } finally { setWalletBusy(false); }
   };
-  // Remember each wallet's active address for the switcher (public, no secret).
+  /** Open account `idx` of any wallet in one step (in the open wallet it's a
+   *  plain account switch). */
+  const openAccountIn = async (id: string, idx: number) => {
+    if (walletBusy) return;
+    if (id === activeWalletId) { switchAccount(idx); return; }
+    setWalletBusy(true);
+    try {
+      const w = await openAccount(id, idx);
+      if (w) showOpenedWallet(w.secret);
+      else Alert.alert('Couldn’t open the wallet', 'Lock and unlock Thanos, then try again.');
+    } finally { setWalletBusy(false); }
+  };
+  /** "+ Add account" under a wallet — any wallet, not only the open one: its
+   *  next derived account, opened. */
+  const addAccountIn = async (id: string) => {
+    if (walletBusy) return;
+    if (id === activeWalletId) { addAccount(); return; }
+    setWalletBusy(true);
+    try {
+      const r = await addAccountToWallet(id);
+      if ('error' in r) { Alert.alert('Couldn’t add an account', r.error); return; }
+      showOpenedWallet(r.wallet.secret);
+    } finally { setWalletBusy(false); }
+  };
+  // Cache the open wallet's account addresses (public, no secret) so the
+  // account sheet lists them whichever wallet is open.
   useEffect(() => {
-    if (unlocked && walletSeed.length > 0) setWalletAddress(activeWalletId, walletAddr);
-  }, [unlocked, walletSeed, walletAddr, activeWalletId]);
+    if (!unlocked || walletSeed.length === 0) return;
+    const addrs: Record<number, string> = {};
+    if (isPrivateKeyWallet(walletSeed)) addrs[0] = walletAddr;
+    else accountAddresses.forEach((a, i) => { if (a) addrs[i] = a; });
+    setWalletAddresses(activeWalletId, addrs);
+  }, [unlocked, walletSeed, walletAddr, accountAddresses, activeWalletId]);
+
+  /* Account sheet data: every wallet's accounts (read from storage for the
+     ones not open) and, for any wallet whose addresses aren't cached yet, a
+     one-off derivation from the unlocked vault once the sheet is up — one
+     wallet at a time, rows show a placeholder until theirs land. */
+  const [sheetAccounts, setSheetAccounts] = useState<Record<string, WalletAccounts>>({});
+  const [, setAddrTick] = useState(0);
+  useEffect(() => {
+    if (!acctSheetOpen || !unlocked) return;
+    let cancel = false;
+    let task: ReturnType<typeof InteractionManager.runAfterInteractions> | null = null;
+    void (async () => {
+      const out: Record<string, WalletAccounts> = {};
+      for (const w of wallets) out[w.id] = await readWalletAccounts(w.id);
+      if (cancel) return;
+      setSheetAccounts(out);
+      // A private key has the one account; a phrase wallet its listed ones.
+      const wanted = (w: WalletInfo) => (w.kind === 'key' ? [0] : out[w.id].visible);
+      const missing = wallets.filter((w) => w.id !== activeWalletId && wanted(w).some((i) => !getWalletAddresses(w.id)[i]));
+      if (!missing.length) return;
+      task = InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          for (const w of missing) {
+            await new Promise((r) => setTimeout(r, 30)); // let the sheet paint between wallets
+            if (cancel) return;
+            const secret = await readWalletSecret(w.id);
+            if (!secret || cancel) continue;
+            const words = secret.split(' ');
+            const want = wanted(w);
+            const addrs: Record<number, string> = {};
+            if (isPrivateKeyWallet(words)) addrs[0] = deriveEvmAddress(words);
+            else {
+              const all = deriveAccountAddresses(words, Math.max(...want) + 1);
+              for (const i of want) if (all[i]) addrs[i] = all[i];
+            }
+            setWalletAddresses(w.id, addrs);
+            setAddrTick((t) => t + 1);
+          }
+        })();
+      });
+    })();
+    return () => { cancel = true; task?.cancel(); };
+  }, [acctSheetOpen, unlocked, wallets, activeWalletId]);
+
+  /* Removing the last wallet is Settings → Delete wallet (erase, with the
+     backup check): the sheet routes there and Settings runs that flow. */
+  const fullDeleteRef = useRef(false);
+  const [fullDeleteTick, setFullDeleteTick] = useState(0);
+  const requestFullDelete = () => {
+    fullDeleteRef.current = true;
+    afterSheet(() => { setScreen('settings'); setFullDeleteTick((t) => t + 1); });
+  };
 
   const closeRename = () => { setRenameIdx(null); setRenameWalletId(null); };
   const openWalletRename = (id: string) => {
@@ -10270,33 +10396,32 @@ function App() {
     else Alert.alert('Couldn’t rename the wallet', 'Lock and unlock Thanos, then try again.');
   };
 
-  /** Every listed address of a wallet — the open one from state; another one
-   *  derived from its secret just for this check. */
+  /** Every listed address of a wallet — the open one from state; another from
+   *  the address cache, derived from its secret only if some are missing. */
   const walletAddresses = async (id: string): Promise<string[]> => {
     if (id === activeWalletId) {
       return isPrivateKeyWallet(walletSeed) ? [walletAddr] : visibleAccounts.map((i) => accountAddresses[i]).filter(Boolean);
     }
+    const { visible } = await readWalletAccounts(id);
+    const known = getWalletAddresses(id);
+    if (visible.every((i) => known[i])) return visible.map((i) => known[i]);
     const secret = await readWalletSecret(id);
     if (!secret) return [];
     const words = secret.split(' ');
     if (isPrivateKeyWallet(words)) return [deriveEvmAddress(words)];
-    const idxs = await walletAccountIndices(id);
-    const all = deriveAccountAddresses(words, Math.max(...idxs) + 1);
-    return idxs.map((i) => all[i]).filter(Boolean);
+    const all = deriveAccountAddresses(words, Math.max(...visible) + 1);
+    return visible.map((i) => all[i]).filter(Boolean);
   };
 
-  /* Remove a wallet (never the last — that's Settings → Delete wallet, which
+  /* Remove a wallet (the last one goes through Settings → Delete wallet, which
      erases the vault). Funds don't block it, as with accounts: what it holds
      is checked first, and the user is reminded that only its recovery phrase
      (or key) reaches the funds afterwards. Copy follows the extension's. */
   const confirmRemoveWallet = async (id: string) => {
     if (walletBusy) return;
+    if (wallets.length <= 1) { requestFullDelete(); return; }
     const w = wallets.find((x) => x.id === id);
     if (!w) return;
-    if (wallets.length <= 1) {
-      Alert.alert('Can’t remove', 'This is your only wallet. To erase it from this device, use Settings → Danger zone → Delete wallet.');
-      return;
-    }
     setWalletBusy(true);
     let usd: number | null = null;
     let threshold = 1;
@@ -10636,9 +10761,135 @@ function App() {
   const walletsApi: WalletsApi = {
     wallets, activeId: activeWalletId,
     remove: (id) => { void confirmRemoveWallet(id); },
-    openSwitcher: () => openAcctSheet('wallets'),
+    openSwitcher: openAcctSheet,
+    fullDeleteTick,
+    takeFullDelete: () => { const v = fullDeleteRef.current; fullDeleteRef.current = false; return v; },
   };
   const curAcctIdx = walletSeed.length > 0 && !isPrivateKeyWallet(walletSeed) ? activeIdx : 0;
+
+  /* ─── Account sheet: one card per wallet, its accounts under it ─────── */
+  const sheetWallets = wallets.length ? wallets : [activeWallet];
+  /** A wallet's "…" (or long-press): Rename when there are several, and
+   *  Remove — the last wallet's runs the full delete flow. */
+  const walletMenu = (w: WalletInfo) => Alert.alert(w.name, walletOriginLabel(w), [
+    ...(wallets.length > 1 ? [{ text: 'Rename', onPress: () => openWalletRename(w.id) }] : []),
+    { text: wallets.length > 1 ? 'Remove' : 'Delete wallet', style: 'destructive' as const, onPress: () => { void confirmRemoveWallet(w.id); } },
+    { text: 'Cancel', style: 'cancel' as const },
+  ]);
+  const renderWalletCard = (w: WalletInfo) => {
+    const open = w.id === activeWalletId;
+    const pk = w.kind === 'key';
+    const hue = hues[w.id] ?? 0;
+    const badge = originBadge(walletGroupOf(w), isDark);
+    // The open wallet from live state; the others from storage + the address cache.
+    const info: WalletAccounts | undefined = open
+      ? { active: pk ? 0 : activeIdx, visible: pk ? [0] : visibleAccounts, count: accountCount, names: {} }
+      : sheetAccounts[w.id];
+    const cached = open ? {} : getWalletAddresses(w.id);
+    const addrOf = (i: number) => (open ? (pk ? walletAddr : accountAddresses[i]) : cached[i]) ?? '';
+    const nameOf = (i: number) => (open ? getAccountName(i) : info?.names[i] || `Account ${i + 1}`);
+    const rows = !info ? [] : pk ? [0] : [info.active, ...info.visible.filter((i) => i !== info.active)];
+    const lastAccount = visibleAccounts.length <= 1;
+    return (
+      <View key={w.id} style={{
+        borderRadius: 16, borderWidth: 1, borderColor: open ? colors.blue : colors.borderSubtle,
+        backgroundColor: colors.bgElevated, marginBottom: 10, overflow: 'hidden',
+      }}>
+        {/* The wallet: icon, name, type badge, "…" */}
+        <Pressable
+          onPress={() => { if (!open) { setAcctSheetOpen(false); void openWalletById(w.id); } }}
+          onLongPress={() => walletMenu(w)}
+          style={({ pressed }) => [{
+            flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 10,
+            borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle,
+          }, pressed && !open && { opacity: 0.8 }]}
+          accessibilityLabel={`${w.name}, ${walletOriginLabel(w)}${open ? ', open' : ''}`}
+        >
+          <IdentityIcon hue={hue} size={34} wallet={w.kind}/>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800' }} numberOfLines={1}>{w.name}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+              <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, backgroundColor: badge.bg }}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: badge.fg }}>{walletOriginLabel(w)}</Text>
+              </View>
+              {!pk && info && (
+                <Text style={{ color: colors.textMuted, fontSize: 11.5 }}>
+                  {info.visible.length} {info.visible.length === 1 ? 'account' : 'accounts'}
+                </Text>
+              )}
+            </View>
+          </View>
+          <Pressable hitSlop={10} onPress={() => walletMenu(w)} accessibilityLabel={`${w.name} options`}
+            style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}>
+            <Ellipsis size={18} color={colors.textMuted} strokeWidth={2.2}/>
+          </Pressable>
+        </Pressable>
+
+        {/* Its accounts — the wallet's active one first. Tapping one opens
+            this wallet on that account in one step. */}
+        {rows.map((i) => {
+          const a = addrOf(i);
+          const on = open && i === (pk ? 0 : activeIdx);
+          const tag = a && !/^0x0{40}$/.test(a) ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : 'Loading address…';
+          return (
+            <Pressable
+              key={i}
+              onPress={() => { setAcctSheetOpen(false); void openAccountIn(w.id, i); }}
+              style={({ pressed }) => [{
+                flexDirection: 'row', alignItems: 'center', gap: 10,
+                paddingLeft: 22, paddingRight: 8, paddingVertical: 9,
+                backgroundColor: on ? colors.blueDim : 'transparent',
+              }, pressed && { opacity: 0.75 }]}
+              accessibilityLabel={on ? `${nameOf(i)} (active)` : `Open ${nameOf(i)} in ${w.name}`}
+            >
+              <IdentityIcon hue={accountHue(hue, i)} size={30} label={accountInitials(nameOf(i))}/>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: on ? '800' : '600' }} numberOfLines={1}>{nameOf(i)}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>{tag}</Text>
+              </View>
+              {on && <Check size={17} color={colors.blue} strokeWidth={2.6}/>}
+              {/* Rename / delete for the open wallet's accounts (a wallet
+                  must keep one account — delete is dimmed on the last). */}
+              {open && (
+                <Pressable hitSlop={8} onPress={() => openRename(i)} accessibilityLabel={`Rename ${nameOf(i)}`}
+                  style={({ pressed }) => [{ padding: 5 }, pressed && { opacity: 0.6 }]}>
+                  <Pencil size={15} color={colors.textMuted} strokeWidth={2.2}/>
+                </Pressable>
+              )}
+              {open && !pk && (
+                <Pressable hitSlop={8} onPress={() => void confirmDeleteAccount(i)} disabled={acctBusy}
+                  accessibilityLabel={`Delete ${nameOf(i)}`}
+                  style={({ pressed }) => [{ padding: 5, opacity: lastAccount ? 0.4 : 1 }, pressed && { opacity: 0.6 }]}>
+                  <Trash2 size={15} color={lastAccount ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
+                </Pressable>
+              )}
+            </Pressable>
+          );
+        })}
+        {!info && (
+          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={colors.textMuted}/>
+          </View>
+        )}
+
+        {/* "+ Add account" under every recovery-phrase wallet: the next
+            derived account of THIS wallet, opened. A private key has one. */}
+        {!pk && info && info.count < MAX_ACCOUNTS && (
+          <Pressable
+            onPress={() => { setAcctSheetOpen(false); void addAccountIn(w.id); }}
+            style={({ pressed }) => [{
+              flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 22, paddingVertical: 11,
+              borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle,
+            }, pressed && { opacity: 0.7 }]}
+            accessibilityLabel={`Add an account to ${w.name}`}
+          >
+            <Plus size={16} color={colors.blue} strokeWidth={2.6}/>
+            <Text style={{ color: colors.blue, fontSize: 13.5, fontWeight: '700' }}>Add account</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+  };
 
   return (
     <ThemeCtx.Provider value={colors}>
@@ -10731,195 +10982,30 @@ function App() {
                   }}
                 >
                   <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: colors.borderDefault, alignSelf: 'center', marginBottom: 16 }}/>
-                  {sheetView === 'accounts' && <>
-                  {/* The open wallet — tap for the wallet list (switch, add,
-                      rename, remove). Its accounts follow below. */}
-                  <Pressable
-                    onPress={() => setSheetView('wallets')}
-                    style={({ pressed }) => [{
-                      flexDirection: 'row', alignItems: 'center', gap: 10,
-                      paddingVertical: 8, paddingHorizontal: 10, borderRadius: 14, marginBottom: 14,
-                      borderWidth: 1, borderColor: colors.borderSubtle,
-                    }, pressed && { opacity: 0.7 }]}
-                    accessibilityLabel={`${activeWallet.name} — show all wallets`}
-                  >
-                    <IdentityIcon hue={activeHue} size={30} wallet={activeWallet.kind}/>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }} numberOfLines={1}>{activeWallet.name}</Text>
-                      <Text style={{ color: colors.textMuted, fontSize: 12 }} numberOfLines={1}>
-                        {activeWallet.kind === 'key'
-                          ? 'Private key · 1 account'
-                          : `Recovery phrase · ${visibleAccounts.length} ${visibleAccounts.length === 1 ? 'account' : 'accounts'}`}
-                      </Text>
+                  {/* Every wallet as a card with its accounts under it, in
+                      sections: created here, imported phrases, private keys
+                      (client 2026-10-17). Tap any account to open it —
+                      wallet and account in one step. */}
+                  {sheetView === 'list' && <>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }}>Wallets & accounts</Text>
+                      {(walletBusy || acctBusy) && <ActivityIndicator size="small" color={colors.blue}/>}
                     </View>
-                    <Text style={{ color: colors.blue, fontSize: 13, fontWeight: '700' }}>
-                      {wallets.length > 1 ? `Wallets · ${wallets.length}` : 'Wallets'}
-                    </Text>
-                    <ChevronRight size={16} color={colors.blue} strokeWidth={2.4}/>
-                  </Pressable>
-                  {/* The active account heads the sheet with its own rename/
-                      delete; the list below holds only the OTHER accounts
-                      (client 2026-10-15: the active account isn't repeated in
-                      its own switcher). */}
-                  {(() => {
-                    const pk = isPrivateKeyWallet(walletSeed);
-                    const cur = pk ? 0 : activeIdx;
-                    // The account's litho1 address (its 0x is in Settings and
-                    // Receive, as the secondary "EVM address").
-                    const curTag = walletSeed.length > 0 ? shortRowAddr(displayAddr(walletAddr, LITHO_CHAIN_ID)) : '';
-                    // A wallet must keep one account — delete stays visible
-                    // but dimmed on the last one, with the reason in the alert.
-                    const lastAccount = visibleAccounts.length <= 1;
-                    const others = pk ? [] : visibleAccounts.filter((i) => i !== cur);
-                    const renameBtn = (i: number) => (
-                      <Pressable
-                        hitSlop={10}
-                        onPress={() => openRename(i)}
-                        style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}
-                        accessibilityLabel={`Rename ${getAccountName(i)}`}
-                      >
-                        <Pencil size={16} color={i === cur ? colors.blue : colors.textMuted} strokeWidth={2.2}/>
-                      </Pressable>
-                    );
-                    const deleteBtn = (i: number) => (pk ? null : (
-                      <Pressable
-                        hitSlop={10}
-                        onPress={() => void confirmDeleteAccount(i)}
-                        disabled={acctBusy}
-                        style={({ pressed }) => [
-                          { padding: 6, opacity: lastAccount ? 0.4 : 1 },
-                          pressed && { opacity: 0.6 },
-                        ]}
-                        accessibilityLabel={`Delete ${getAccountName(i)}`}
-                      >
-                        <Trash2 size={16} color={lastAccount ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
-                      </Pressable>
-                    ));
-                    return (
-                      <>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                          <IdentityIcon hue={accountHue(activeHue, cur)} size={44} label={accountInitials(getAccountName(cur))}/>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }} numberOfLines={1}>
-                              {getAccountName(cur)}
-                            </Text>
-                            {curTag ? (
-                              <Text style={{ color: colors.textMuted, fontSize: 13, fontFamily: MONO, marginTop: 2 }} numberOfLines={1}>
-                                {curTag}
-                              </Text>
-                            ) : null}
-                          </View>
-                          {renameBtn(cur)}
-                          {deleteBtn(cur)}
-                        </View>
-
-                        {others.map((i) => {
-                          const a = accountAddresses[i];
-                          const tag = a ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : '';
-                          return (
-                            <Pressable
-                              key={i}
-                              onPress={() => { switchAccount(i); setAcctSheetOpen(false); }}
-                              style={({ pressed }) => [{
-                                flexDirection: 'row', alignItems: 'center', gap: 12,
-                                padding: 14, borderRadius: 14, marginBottom: 8,
-                                backgroundColor: colors.bgElevated,
-                                borderWidth: 1, borderColor: colors.borderSubtle,
-                              }, pressed && { opacity: 0.85 }]}
-                            >
-                              <IdentityIcon hue={accountHue(activeHue, i)} size={38} label={accountInitials(getAccountName(i))}/>
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{getAccountName(i)}</Text>
-                                {tag ? (
-                                  <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>
-                                    {tag}
-                                  </Text>
-                                ) : null}
-                              </View>
-                              {renameBtn(i)}
-                              {deleteBtn(i)}
-                            </Pressable>
-                          );
-                        })}
-                      </>
-                    );
-                  })()}
-
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                    {accountCount < MAX_ACCOUNTS && !isPrivateKeyWallet(walletSeed) && (
-                      <Pressable
-                        onPress={() => { addAccount(); setAcctSheetOpen(false); }}
-                        style={({ pressed }) => [sheetAddBtn, pressed && { opacity: 0.85 }]}
-                      >
-                        <Plus size={18} color={colors.blue} strokeWidth={2.6}/>
-                        <Text style={{ color: colors.blue, fontSize: 14, fontWeight: '700' }}>Add account</Text>
-                      </Pressable>
-                    )}
-                    <Pressable onPress={startAddWallet} style={({ pressed }) => [sheetAddBtn, pressed && { opacity: 0.85 }]}>
-                      <WalletIcon size={17} color={colors.blue} strokeWidth={2.4}/>
-                      <Text style={{ color: colors.blue, fontSize: 14, fontWeight: '700' }}>Add wallet</Text>
-                    </Pressable>
-                  </View>
-                  </>}
-
-                  {/* Wallet list — every wallet in the vault with the litho1
-                      address of its active account. Tap opens it. */}
-                  {sheetView === 'wallets' && <>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 14 }}>
-                      <Pressable hitSlop={10} onPress={() => setSheetView('accounts')} accessibilityLabel="Back to accounts"
-                        style={({ pressed }) => [{ padding: 2 }, pressed && { opacity: 0.6 }]}>
-                        <ChevronLeft size={22} color={colors.textPrimary}/>
-                      </Pressable>
-                      <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }}>Wallets</Text>
-                      {walletBusy && <ActivityIndicator size="small" color={colors.blue}/>}
-                    </View>
-                    <ScrollView style={{ maxHeight: Dimensions.get('window').height * 0.5 }} bounces={false}>
-                      {(wallets.length ? wallets : [activeWallet]).map((w) => {
-                        const on = w.id === activeWalletId;
-                        const addr = on ? walletAddr : getWalletAddress(w.id);
-                        const tag = addr && !/^0x0{40}$/.test(addr)
-                          ? shortRowAddr(displayAddr(addr, LITHO_CHAIN_ID))
-                          : (w.kind === 'key' ? 'Private key' : 'Recovery phrase');
-                        const only = wallets.length <= 1;
+                    <ScrollView style={{ maxHeight: Dimensions.get('window').height * 0.62 }} bounces={false} showsVerticalScrollIndicator={false}>
+                      {WALLET_GROUPS.map((g) => {
+                        const list = sheetWallets.filter((w) => walletGroupOf(w) === g.key);
+                        if (!list.length) return null;
                         return (
-                          <Pressable
-                            key={w.id}
-                            onPress={() => { setAcctSheetOpen(false); void openWalletById(w.id); }}
-                            disabled={walletBusy}
-                            style={({ pressed }) => [{
-                              flexDirection: 'row', alignItems: 'center', gap: 12,
-                              padding: 14, borderRadius: 14, marginBottom: 8,
-                              backgroundColor: colors.bgElevated,
-                              borderWidth: 1, borderColor: on ? colors.blue : colors.borderSubtle,
-                            }, pressed && { opacity: 0.85 }]}
-                            accessibilityLabel={on ? `${w.name} (open)` : `Open ${w.name}`}
-                          >
-                            <IdentityIcon hue={hues[w.id] ?? 0} size={38} wallet={w.kind}/>
-                            <View style={{ flex: 1 }}>
-                              <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{w.name}</Text>
-                              <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>{tag}</Text>
-                            </View>
-                            {on && <Check size={18} color={colors.blue} strokeWidth={2.6}/>}
-                            {/* Names only tell several wallets apart — a lone
-                                wallet stays stored exactly as before. */}
-                            {!only && (
-                              <Pressable hitSlop={10} onPress={() => openWalletRename(w.id)} accessibilityLabel={`Rename ${w.name}`}
-                                style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}>
-                                <Pencil size={16} color={colors.textMuted} strokeWidth={2.2}/>
-                              </Pressable>
-                            )}
-                            {/* The last wallet is erased from Settings → Delete
-                                wallet; its delete stays visible but dimmed. */}
-                            <Pressable hitSlop={10} onPress={() => void confirmRemoveWallet(w.id)} disabled={walletBusy}
-                              accessibilityLabel={`Remove ${w.name}`}
-                              style={({ pressed }) => [{ padding: 6, opacity: only ? 0.4 : 1 }, pressed && { opacity: 0.6 }]}>
-                              <Trash2 size={16} color={only ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
-                            </Pressable>
-                          </Pressable>
+                          <View key={g.key} style={{ marginBottom: 4 }}>
+                            <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginTop: 4, marginBottom: 8 }}>
+                              {g.title.toUpperCase()}
+                            </Text>
+                            {list.map(renderWalletCard)}
+                          </View>
                         );
                       })}
                     </ScrollView>
-                    <Pressable onPress={startAddWallet} style={({ pressed }) => [sheetAddBtn, { marginTop: 4, flex: 0 }, pressed && { opacity: 0.85 }]}>
+                    <Pressable onPress={startAddWallet} style={({ pressed }) => [sheetAddBtn, { marginTop: 6, flex: 0 }, pressed && { opacity: 0.85 }]}>
                       <Plus size={18} color={colors.blue} strokeWidth={2.6}/>
                       <Text style={{ color: colors.blue, fontSize: 14, fontWeight: '700' }}>Add wallet</Text>
                     </Pressable>
@@ -10929,7 +11015,7 @@ function App() {
                       verify steps) or an import, kept next to the others. */}
                   {sheetView === 'add' && <>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                      <Pressable hitSlop={10} onPress={() => setSheetView('wallets')} accessibilityLabel="Back to wallets"
+                      <Pressable hitSlop={10} onPress={() => setSheetView('list')} accessibilityLabel="Back to wallets and accounts"
                         style={({ pressed }) => [{ padding: 2 }, pressed && { opacity: 0.6 }]}>
                         <ChevronLeft size={22} color={colors.textPrimary}/>
                       </Pressable>
@@ -10939,7 +11025,7 @@ function App() {
                       Your current wallets stay — switch between them from this sheet. Each wallet has its own recovery phrase (or key) and accounts.
                     </Text>
                     {([
-                      { start: 'create', title: 'Create a new wallet', sub: 'A new recovery phrase to write down and verify', Icon: Sparkles },
+                      { start: 'create', title: 'Create new wallet', sub: 'A new recovery phrase to write down and verify', Icon: Sparkles },
                       { start: 'phrase', title: 'Import recovery phrase', sub: '12–24 words · full multi-chain wallet', Icon: Key },
                       { start: 'privateKey', title: 'Import private key', sub: 'Single EVM account · no BTC/SOL/Cosmos', Icon: Shield },
                     ] as const).map((o) => (
@@ -11069,7 +11155,7 @@ function App() {
                    the previous tap-to-lock behaviour. */
                 onPress={() => {
                   if (walletSeed.length === 0) return;
-                  openAcctSheet('accounts');   // dark-themed bottom sheet (below)
+                  openAcctSheet();   // dark-themed bottom sheet (below)
                 }}
                 onLongPress={() => Alert.alert(
                   'Lock wallet?',

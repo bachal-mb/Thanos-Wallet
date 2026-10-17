@@ -35,7 +35,9 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes, bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import {
   FIRST_WALLET_ID, walletKey, currentWalletId, loadAccountsFromStorage,
-  forgetWalletSettings, forgetAddedWallets,
+  forgetWalletSettings, forgetAddedWallets, setWalletOrigin, readWalletAccounts,
+  getAccountCount, setAccountCount, setActiveAccountIndex, getVisibleAccountIndices,
+  MAX_ACCOUNTS, type WalletOrigin,
 } from './accounts';
 
 /* ─── Constants ─────────────────────────────────────────────────────────── */
@@ -300,7 +302,8 @@ export async function upgradeVaultKdf(mnemonic: string, password: string): Promi
  * versions open. Each wallet's settings (accounts, names, backup flag) live
  * in AsyncStorage under the original keys for w0 and `<key>@<walletId>` for
  * the others (lib/accounts.ts walletKey). Which wallet is open is remembered
- * in thanos.active_wallet — an id, not a secret. */
+ * in thanos.active_wallet — an id, not a secret — and each wallet's public
+ * metadata (created / imported, its accounts' addresses) in thanos.wallet_meta. */
 export interface StoredWallet { id: string; name: string; secret: string }
 export interface WalletSet { wallets: StoredWallet[] }
 export interface WalletInfo { id: string; name: string; kind: 'phrase' | 'key' }
@@ -417,9 +420,10 @@ export async function listWallets(): Promise<{ wallets: WalletInfo[]; activeId: 
 }
 
 /** Add another wallet (a new or imported phrase, or a private key) to the
- *  vault and open it. The user holds its secret — it was just created and
- *  verified, or imported — so it counts as backed up. */
-export async function addWallet(rawSecret: string, name?: string): Promise<{ wallet: StoredWallet } | { error: string }> {
+ *  vault and open it on its first account. The user holds its secret — it
+ *  was just created and verified, or imported — so it counts as backed up.
+ *  `origin` labels it in the account sheet (a private key is always imported). */
+export async function addWallet(rawSecret: string, name?: string, origin: WalletOrigin = 'imported'): Promise<{ wallet: StoredWallet } | { error: string }> {
   return serial(async () => {
     const o = await openSet();
     if (!o) return { error: LOCKED_ERR };
@@ -436,6 +440,7 @@ export async function addWallet(rawSecret: string, name?: string): Promise<{ wal
     const set: WalletSet = { wallets: [...o.set.wallets, wallet] };
     if (!(await writePlaintext(o, serializeWalletSet(set)))) return { error: SAVE_ERR };
     await forgetWalletSettings(id); // nothing should be there — never inherit stale settings
+    setWalletOrigin(id, isPrivateKeyString(secret) ? 'imported' : origin);
     await selectWallet(set, id);
     await setSeedBackedUp(true);
     return { wallet };
@@ -447,6 +452,34 @@ export async function switchWallet(id: string): Promise<StoredWallet | null> {
   const o = await openSet();
   if (!o || !o.set.wallets.some(w => w.id === id)) return null;
   return selectWallet(o.set, id);
+}
+
+/** Open one account of any wallet in one step: that wallet (if it isn't the
+ *  open one) and its account `idx` (if listed — else the wallet's own). */
+export async function openAccount(id: string, idx: number): Promise<StoredWallet | null> {
+  const o = await openSet();
+  const w = o?.set.wallets.find(x => x.id === id);
+  if (!o || !w) return null;
+  if (id !== currentWalletId()) await selectWallet(o.set, id);
+  if (!isPrivateKeyString(w.secret) && getVisibleAccountIndices().includes(idx)) setActiveAccountIndex(idx);
+  return w;
+}
+
+/** Add the next derived account to a recovery-phrase wallet — any wallet in
+ *  the vault, not only the open one — and open the wallet on it. Indices
+ *  are never reused (a removed account stays hidden at its index). */
+export async function addAccountToWallet(id: string): Promise<{ wallet: StoredWallet; idx: number } | { error: string }> {
+  const o = await openSet();
+  const w = o?.set.wallets.find(x => x.id === id);
+  if (!o) return { error: LOCKED_ERR };
+  if (!w) return { error: 'That wallet is not in Thanos.' };
+  if (isPrivateKeyString(w.secret)) return { error: 'This wallet was imported from a private key, so it has just the one account.' };
+  if ((await readWalletAccounts(id)).count >= MAX_ACCOUNTS) return { error: `A wallet holds up to ${MAX_ACCOUNTS} accounts.` };
+  if (id !== currentWalletId()) await selectWallet(o.set, id);
+  const idx = getAccountCount();
+  setAccountCount(idx + 1);
+  setActiveAccountIndex(idx);
+  return { wallet: w, idx };
 }
 
 /** Rename a wallet. A lone first wallet is stored as its bare secret (no
