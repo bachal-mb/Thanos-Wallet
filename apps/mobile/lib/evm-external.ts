@@ -147,3 +147,24 @@ export async function getAllExtEvmTokenBalances(address: string): Promise<Array<
     return { token, balance: raw == null ? null : (parseFloat(formatUnits(raw, token.decimals)) || 0) };
   }));
 }
+
+const ERC20_HOLDING_ABI = [...ERC20_BALANCE_ABI, 'function decimals() view returns (uint8)'];
+
+/** Balance (base units) and decimals of tokens an explorer says `owner`
+ *  holds (lib/discovered-assets.ts), read from each token's own chain — the
+ *  explorer's figures stand in only where a read fails (null). A token on a
+ *  network the wallet doesn't have reads as null. */
+export async function readErc20Holdings(
+  owner: string,
+  tokens: Array<{ chainId: number; address: string }>,
+): Promise<Array<{ raw: bigint | null; decimals: number | null }>> {
+  return Promise.all(tokens.map(async (t) => {
+    if (!getExtEvmChain(t.chainId)) return { raw: null, decimals: null };
+    const c = new Contract(t.address, ERC20_HOLDING_ABI, getExtEvmProvider(t.chainId));
+    const [raw, dec] = await Promise.all([
+      readOrNull(() => c.balanceOf(owner) as Promise<bigint>),
+      readOrNull(async () => Number(await (c.decimals() as Promise<bigint>))),
+    ]);
+    return { raw, decimals: dec != null && Number.isInteger(dec) && dec >= 0 && dec <= 36 ? dec : null };
+  }));
+}

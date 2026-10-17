@@ -35,6 +35,7 @@ export * from './portfolio/price-history';
 export * from './portfolio/tx-details';
 export * from './portfolio/allowances';
 export * from './portfolio/makalu-allowances';
+export * from './portfolio/token-discovery';
 export * from './history/chain-history';
 
 /* ── Swaps · bridge · DEX ────────────────────────────────────────────── */
