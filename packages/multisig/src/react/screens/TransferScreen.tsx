@@ -124,7 +124,7 @@ export function TransferScreen({ address, onBack }: { address: Address; onBack?:
             </span>
           </Field>
           <Field label="Recipient">
-            <AddressInput value={recipient} onChange={setRecipient} chainId={chainId} testId="tms-recipient" />
+            <AddressInput value={recipient} onChange={setRecipient} testId="tms-recipient" />
           </Field>
           <Button kind="primary" type="submit" disabled={!amount || !recipient || !!action.pending} testId="tms-review-btn">
             Review

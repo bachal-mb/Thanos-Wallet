@@ -62,7 +62,7 @@ export function ProposalScreen({ address, id, onBack }: { address: Address; id: 
       value: review.decodedCalls.some((d) => d.recipient) ? (
         <span className="tms-stack">
           {[...new Set(review.decodedCalls.flatMap((d) => (d.recipient ? [d.recipient] : [])))].map((r) => (
-            <AddressText key={r} address={r} chainId={chainId} full />
+            <AddressText key={r} address={r} full />
           ))}
         </span>
       ) : (
@@ -102,7 +102,7 @@ export function ProposalScreen({ address, id, onBack }: { address: Address; id: 
             .map((a) => (
               <li key={a.signer} className={a.approved ? 'tms-approved' : ''}>
                 <span aria-hidden="true">{a.approved ? '✓' : '○'}</span>
-                <AddressText address={a.signer} chainId={chainId} contract={a.type === SignerType.CONTRACT} />
+                <AddressText address={a.signer} />
                 {a.signer.toLowerCase() === me && <Pill tone="info">You</Pill>}
               </li>
             ))}
@@ -151,7 +151,7 @@ export function ProposalScreen({ address, id, onBack }: { address: Address; id: 
       }
       subtitle={
         <span>
-          Proposed by <AddressText address={details.proposal.proposer} chainId={chainId} /> on {formatTimestamp(details.proposal.createdAt)}
+          Proposed by <AddressText address={details.proposal.proposer} /> on {formatTimestamp(details.proposal.createdAt)}
         </span>
       }
       onBack={onBack}

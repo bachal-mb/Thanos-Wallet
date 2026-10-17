@@ -4,7 +4,7 @@ import type { ProposalLine } from '../../client';
 import { cleanVaultName } from '../../store';
 import { useMultisig } from '../context';
 import { useAsync } from '../hooks';
-import { AddressText, Button, Card, CopyButton, ErrorText, Icon, Notice, Pill, Screen, Spinner, type Tone } from '../ui';
+import { AddressText, Button, Card, ErrorText, Icon, Notice, Pill, Screen, Spinner, type Tone } from '../ui';
 
 export function stateTone(state: ProposalState): Tone {
   switch (state) {
@@ -22,7 +22,7 @@ export function stateTone(state: ProposalState): Tone {
 }
 
 export function VaultScreen({ address, onBack }: { address: Address; onBack?: () => void }) {
-  const { client, chainId, account, canSign, go, back, openUrl, explorerAddress } = useMultisig();
+  const { client, account, canSign, go, back, openUrl, explorerAddress } = useMultisig();
   const data = useAsync(async () => {
     const [snapshot, balances, proposals, name] = await Promise.all([client.snapshot(address), client.balances(address), client.proposalLines(address), client.nameOf(address)]);
     return { snapshot, balances, proposals, name };
@@ -64,12 +64,7 @@ export function VaultScreen({ address, onBack }: { address: Address; onBack?: ()
           </form>
         )
       }
-      subtitle={
-        <span className="tms-address">
-          <span className="tms-mono" data-testid="tms-vault-address">{address}</span>
-          <CopyButton text={address} label="Copy multisig address" />
-        </span>
-      }
+      subtitle={<AddressText address={address} full testId="tms-vault-address" />}
       onBack={onBack}
       actions={
         <button type="button" className="tms-icon-btn" onClick={data.reload} aria-label="Refresh" title="Refresh">
@@ -117,7 +112,7 @@ export function VaultScreen({ address, onBack }: { address: Address; onBack?: ()
             .filter((s) => s.type !== SignerType.RECOVERY)
             .map((s) => (
               <li key={s.address}>
-                <AddressText address={s.address} chainId={chainId} contract={s.type === SignerType.CONTRACT} />
+                <AddressText address={s.address} />
                 <span className="tms-pills">
                   {s.address.toLowerCase() === me && <Pill tone="info">You</Pill>}
                   {s.type !== SignerType.KEY && <Pill>{SIGNER_TYPE_LABEL[s.type]}</Pill>}

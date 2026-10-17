@@ -5,7 +5,7 @@ import { AddressInput, Button, Card, ErrorText, Field, Screen, Spinner } from '.
 
 /** Adds a multisig by address (one you were made a signer of later, or one you only follow). */
 export function AddScreen({ onBack }: { onBack?: () => void }) {
-  const { client, chainId, replace } = useMultisig();
+  const { client, replace } = useMultisig();
   const [address, setAddress] = useState('');
   const [name, setName] = useState('');
   const action = useAction();
@@ -21,7 +21,7 @@ export function AddScreen({ onBack }: { onBack?: () => void }) {
           }}
         >
           <Field label="MultiSig address">
-            <AddressInput value={address} onChange={setAddress} chainId={chainId} placeholder="0x…" testId="tms-add-address" />
+            <AddressInput value={address} onChange={setAddress} testId="tms-add-address" />
           </Field>
           <Field label="Name (only in your wallet)">
             <input className="tms-input" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="Treasury" data-testid="tms-add-name" />

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { Contract, JsonRpcProvider, formatEther, parseEther } from 'ethers';
-import { toLithoAddress } from '@thanos/multisig';
+import { parseAddress, toLithoAddress } from '@thanos/multisig';
 import { createWallet } from './helpers';
 import { startMultisigChain } from './multisig-chain';
 
@@ -33,7 +33,10 @@ test('create a 2-of-3 MultiSig, propose a payment, approve and execute it', asyn
   // Create (LEP100-15 §82): network, signers (one typed as litho1, as Thanos shows addresses), threshold.
   await page.getByTestId('tms-create').click();
   await expect(page.getByTestId('tms-create-network')).toContainText('chain 31337');
-  const me = (await page.getByTestId('tms-me').innerText()).trim();
+  // Shown as litho1 (every address is); the 0x form is what the funding transaction needs.
+  const shownMe = (await page.getByTestId('tms-me').innerText()).trim();
+  expect(shownMe.startsWith('litho1')).toBe(true);
+  const me = parseAddress(shownMe)!;
   await (await funder.sendTransaction({ to: me, value: parseEther('5') })).wait();
   await page.getByTestId('tms-name').fill('E2E treasury');
   await page.getByTestId('tms-signer-2').fill(await second.getAddress());
@@ -44,7 +47,8 @@ test('create a 2-of-3 MultiSig, propose a payment, approve and execute it', asyn
   await page.getByTestId('tms-deploy').click();
 
   await expect(page.getByTestId('tms-vault-name')).toHaveText('E2E treasury', { timeout: 60_000 });
-  const vault = (await page.getByTestId('tms-vault-address').innerText()).trim();
+  const vault = (await page.getByTestId('tms-vault-address-evm').innerText()).trim();
+  await expect(page.getByTestId('tms-vault-address-litho')).toHaveText(toLithoAddress(vault));
   await expect(page.getByTestId('tms-signers')).toContainText('2 of 3 must approve');
 
   // Fund it and propose sending 1.25 LITHO.

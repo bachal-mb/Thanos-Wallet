@@ -1,4 +1,4 @@
-import { formatTokenUnits } from '@litho-vault/sdk';
+import { formatTokenUnits, shortAccount } from '@litho-vault/sdk';
 import { useMultisig } from '../context';
 import { useAsync } from '../hooks';
 import { Button, Card, ErrorText, Icon, Notice, Pill, Screen, Spinner } from '../ui';
@@ -61,7 +61,7 @@ export function HomeScreen({ onBack }: { onBack?: () => void }) {
               <span className="tms-row-main">
                 <span className="tms-row-title">{v.name}</span>
                 <span className="tms-row-sub tms-mono">
-                  {v.address.slice(0, 8)}…{v.address.slice(-6)} · {String(v.threshold)} of {v.signers.filter((s) => s.type === 1 || s.type === 2).length}
+                  {shortAccount(v.address, 6)} · {String(v.threshold)} of {v.signers.filter((s) => s.type === 1 || s.type === 2).length}
                 </span>
                 <span className="tms-pills">
                   {v.needsMyApproval > 0 && <Pill tone="info">Needs your approval · {v.needsMyApproval}</Pill>}

@@ -4,7 +4,7 @@
  * web app, the extension popup and the desktop app alike.
  */
 import React, { useState } from 'react';
-import { displayAccount, isAnyAddress, parseAddress, toLithoAddress, usesLithoAddresses } from '@litho-vault/sdk';
+import { isAnyAddress, parseAddress, toLithoAddress } from '@litho-vault/sdk';
 
 type Children = { children?: React.ReactNode };
 
@@ -145,19 +145,38 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
 }
 
 /**
- * An address as Thanos shows it: people's accounts as litho1… on Lithosphere, contracts (the
- * multisig itself, tokens) as 0x…. The copy button copies what is shown.
+ * An address as Thanos shows it: litho1… for everything (people, the multisig itself, tokens).
+ * 0x… is the secondary form: its own line under the litho1 address in full views, and the "0x"
+ * switch in compact ones. The copy button copies the form shown.
  */
-export function AddressText({ address, chainId, contract = false, full = false, testId }: { address: string; chainId: number; contract?: boolean; full?: boolean; testId?: string }) {
+export function AddressText({ address, full = false, testId }: { address: string; full?: boolean; testId?: string }) {
+  const [showEvm, setShowEvm] = useState(false);
   const parsed = parseAddress(address);
   if (!parsed) return <span className="tms-mono">{address}</span>;
-  const shown = contract ? parsed : displayAccount(parsed, chainId);
-  const short = full ? shown : shown.startsWith('litho1') ? `${shown.slice(0, 12)}…${shown.slice(-6)}` : `${shown.slice(0, 8)}…${shown.slice(-6)}`;
-  const other = contract ? null : usesLithoAddresses(chainId) ? parsed : null;
+  const litho = toLithoAddress(parsed);
+  if (full) {
+    return (
+      <span className="tms-address tms-address-full" title={`${litho}\n${parsed}`} data-testid={testId}>
+        <span className="tms-address-line">
+          <span className="tms-mono" data-testid={testId ? `${testId}-litho` : undefined}>{litho}</span>
+          <CopyButton text={litho} label="Copy litho1 address" />
+        </span>
+        <span className="tms-address-line tms-address-evm">
+          <span className="tms-mono" data-testid={testId ? `${testId}-evm` : undefined}>{parsed}</span>
+          <CopyButton text={parsed} label="Copy 0x address" />
+        </span>
+      </span>
+    );
+  }
+  const shown = showEvm ? parsed : litho;
+  const short = showEvm ? `${parsed.slice(0, 8)}…${parsed.slice(-6)}` : `${litho.slice(0, 12)}…${litho.slice(-6)}`;
   return (
-    <span className="tms-address" title={other ? `${shown}\nEVM: ${other}` : shown} data-testid={testId}>
+    <span className="tms-address" title={`${litho}\n${parsed}`} data-testid={testId}>
       <span className="tms-mono">{short}</span>
       <CopyButton text={shown} label="Copy address" />
+      <button type="button" className="tms-address-switch" aria-pressed={showEvm} title={showEvm ? 'Show the litho1 address' : 'Show the 0x address'} onClick={() => setShowEvm((x) => !x)}>
+        {showEvm ? 'litho1' : '0x'}
+      </button>
     </span>
   );
 }
@@ -173,17 +192,16 @@ export function Field({ label, hint, children, error }: Children & { label: stri
 }
 
 /** An address input that takes litho1… or 0x… and shows the other form of what was typed. */
-export function AddressInput({ value, onChange, chainId, placeholder, testId }: { value: string; onChange: (v: string) => void; chainId: number; placeholder?: string; testId?: string }) {
+export function AddressInput({ value, onChange, placeholder, testId }: { value: string; onChange: (v: string) => void; placeholder?: string; testId?: string }) {
   const parsed = value.trim() ? parseAddress(value) : null;
-  const litho = usesLithoAddresses(chainId);
-  const hint = parsed ? (value.trim().toLowerCase().startsWith('litho1') ? `EVM: ${parsed}` : litho ? toLithoAddress(parsed) : null) : null;
+  const hint = parsed ? (value.trim().toLowerCase().startsWith('litho1') ? `EVM: ${parsed}` : toLithoAddress(parsed)) : null;
   return (
     <span className="tms-address-input">
       <input
         className="tms-input tms-mono"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder ?? (litho ? 'litho1… or 0x…' : '0x…')}
+        placeholder={placeholder ?? 'litho1… or 0x…'}
         spellCheck={false}
         autoComplete="off"
         data-testid={testId}

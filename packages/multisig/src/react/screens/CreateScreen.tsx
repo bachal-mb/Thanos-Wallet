@@ -44,7 +44,7 @@ export function CreateScreen({ onBack }: { onBack?: () => void }) {
             <input className="tms-input" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="Team treasury" data-testid="tms-name" />
           </Field>
           <Field label="Signer 1 (you)">
-            <span className="tms-mono tms-static" data-testid="tms-me">{account ? displayAccount(account, chainId) : "—"}</span>
+            <span className="tms-mono tms-static" data-testid="tms-me">{account ? displayAccount(account) : "—"}</span>
           </Field>
           {others.map((o, i) => (
             <Field key={i} label={`Signer ${i + 2}`}>
@@ -52,7 +52,6 @@ export function CreateScreen({ onBack }: { onBack?: () => void }) {
                 <AddressInput
                   value={o}
                   onChange={(v) => setOthers((list) => list.map((x, j) => (j === i ? v : x)))}
-                  chainId={chainId}
                   testId={`tms-signer-${i + 2}`}
                 />
                 {others.length > 1 && (

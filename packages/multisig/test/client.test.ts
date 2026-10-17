@@ -110,8 +110,9 @@ describe('a 2-of-3 Thanos MultiSig, end to end', () => {
       'simulation', 'required', 'current', 'timing', 'warnings', 'fee',
     ]);
     expect(draftReview.review.simulation.status).toBe('success');
-    // A local chain shows 0x; Lithosphere chains show people's addresses as litho1 (SDK displayAccount).
+    // Review data keeps the 0x form; every screen shows it as litho1 (SDK displayAccount).
     expect(draftReview.review.recipients).toEqual([recipient]);
+    expect(draftReview.fields.find((f) => f.key === 'recipient')!.value).toBe(toLithoAddress(recipient));
     const { id } = await aliceClient.propose(created.address, calls);
     expect(id).toBe(1n);
 

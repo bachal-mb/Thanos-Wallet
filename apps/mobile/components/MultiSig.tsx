@@ -23,8 +23,8 @@ import {
   isAnyAddress,
   isHumanSigner,
   parseAddress,
+  shortAccount,
   toLithoAddress,
-  usesLithoAddresses,
   type Address,
   type Call,
   type ReviewField,
@@ -279,13 +279,35 @@ function Err({ ctx, error }: { ctx: Ctx; error: string | null | undefined }) {
   return error ? <Notice ctx={ctx} tone="bad" text={error} testID="tms-error" /> : null;
 }
 
-/** People's accounts as litho1… on Lithosphere, contracts as 0x…; tap to copy what is shown. */
-function Addr({ ctx, address, contract = false, full = false }: { ctx: Ctx; address: string; contract?: boolean; full?: boolean }) {
+/**
+ * Every address as litho1… (people, the multisig, tokens). Full views add the 0x form on a second
+ * line; in compact ones a tap switches to 0x…. Long-press copies the form shown.
+ */
+function Addr({ ctx, address, full = false }: { ctx: Ctx; address: string; full?: boolean }) {
+  const [showEvm, setShowEvm] = useState(false);
   const a = parseAddress(address);
-  const shown = !a ? address : contract ? a : displayAccount(a, ctx.chainId);
-  const short = full || shown.length < 20 ? shown : `${shown.slice(0, shown.startsWith('litho1') ? 12 : 8)}…${shown.slice(-6)}`;
+  if (!a) return <Text style={ctx.s.mono}>{address}</Text>;
+  const litho = toLithoAddress(a);
+  if (full) {
+    return (
+      <View>
+        <Pressable onLongPress={() => void Clipboard.setStringAsync(litho)} accessibilityLabel="Long-press to copy the litho1 address">
+          <Text style={ctx.s.mono}>{litho}</Text>
+        </Pressable>
+        <Pressable onLongPress={() => void Clipboard.setStringAsync(a)} accessibilityLabel="Long-press to copy the 0x address">
+          <Text style={[ctx.s.mono, { color: ctx.C.textMuted, fontSize: 11 }]}>{a}</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  const shown = showEvm ? a : litho;
+  const short = showEvm ? `${a.slice(0, 8)}…${a.slice(-6)}` : `${litho.slice(0, 12)}…${litho.slice(-6)}`;
   return (
-    <Pressable onPress={() => void Clipboard.setStringAsync(shown)} accessibilityLabel="Copy address">
+    <Pressable
+      onPress={() => setShowEvm((x) => !x)}
+      onLongPress={() => void Clipboard.setStringAsync(shown)}
+      accessibilityLabel={showEvm ? 'Tap for the litho1 address; long-press to copy' : 'Tap for the 0x address; long-press to copy'}
+    >
       <Text style={ctx.s.mono}>{short}</Text>
     </Pressable>
   );
@@ -293,15 +315,14 @@ function Addr({ ctx, address, contract = false, full = false }: { ctx: Ctx; addr
 
 function AddressField({ ctx, value, onChange, placeholder, testID }: { ctx: Ctx; value: string; onChange: (v: string) => void; placeholder?: string; testID?: string }) {
   const parsed = value.trim() ? parseAddress(value) : null;
-  const litho = usesLithoAddresses(ctx.chainId);
-  const hint = parsed ? (value.trim().toLowerCase().startsWith('litho1') ? `EVM: ${parsed}` : litho ? toLithoAddress(parsed) : null) : null;
+  const hint = parsed ? (value.trim().toLowerCase().startsWith('litho1') ? `EVM: ${parsed}` : toLithoAddress(parsed)) : null;
   return (
     <View style={{ gap: 4 }}>
       <TextInput
         style={[ctx.s.input, ctx.s.mono]}
         value={value}
         onChangeText={onChange}
-        placeholder={placeholder ?? (litho ? 'litho1… or 0x…' : '0x…')}
+        placeholder={placeholder ?? 'litho1… or 0x…'}
         placeholderTextColor={ctx.C.textMuted}
         autoCapitalize="none"
         autoCorrect={false}
@@ -365,7 +386,7 @@ function Home({ ctx, onBack }: { ctx: Ctx; onBack: () => void }) {
           <View style={{ flex: 1, gap: 4 }}>
             <Text style={s.rowTitle}>{v.name}</Text>
             <Text style={[s.rowSub, s.mono]}>
-              {v.address.slice(0, 8)}…{v.address.slice(-6)} · {String(v.threshold)} of {v.signers.filter((x) => isHumanSigner(x.type)).length}
+              {shortAccount(v.address, 6)} · {String(v.threshold)} of {v.signers.filter((x) => isHumanSigner(x.type)).length}
             </Text>
             <View style={s.pills}>
               {v.needsMyApproval > 0 && <Pill ctx={ctx} tone="info" label={`Needs your approval · ${v.needsMyApproval}`} />}
@@ -418,7 +439,9 @@ function Vault({ ctx, address, onBack }: { ctx: Ctx; address: Address; onBack: (
     <View style={s.screen}>
       <Header ctx={ctx} title={name} onBack={onBack} onRefresh={data.reload} />
       <Pressable onPress={() => void Clipboard.setStringAsync(address)}>
-        <Text style={[s.mono, s.muted]} testID="tms-vault-address">{address}</Text>
+        <View testID="tms-vault-address">
+          <Addr ctx={ctx} address={address} full />
+        </View>
       </Pressable>
       {snapshot.freeze.frozen && <Notice ctx={ctx} tone="bad" text="This multisig is frozen: nothing can leave it until the freeze ends or the signers lift it." />}
       {!isSigner && <Notice ctx={ctx} text="You are not a signer of this multisig, so you can follow it but not approve." />}
@@ -442,7 +465,7 @@ function Vault({ ctx, address, onBack }: { ctx: Ctx; address: Address; onBack: (
           .filter((x) => x.type !== SignerType.RECOVERY)
           .map((x) => (
             <View key={x.address} style={s.signer}>
-              <Addr ctx={ctx} address={x.address} contract={x.type === SignerType.CONTRACT} />
+              <Addr ctx={ctx} address={x.address} />
               {x.address.toLowerCase() === me && <Pill ctx={ctx} tone="info" label="You" />}
               {x.type !== SignerType.KEY && <Pill ctx={ctx} label={SIGNER_TYPE_LABEL[x.type]} />}
             </View>
@@ -521,7 +544,7 @@ function Proposal({ ctx, address, id, onBack }: { ctx: Ctx; address: Address; id
                   {details.approvals.filter((a) => a.type !== SignerType.RECOVERY).map((a) => (
                     <View key={a.signer} style={s.signer}>
                       <Text style={{ color: a.approved ? ctx.C.green : ctx.C.textMuted }}>{a.approved ? '✓' : '○'}</Text>
-                      <Addr ctx={ctx} address={a.signer} contract={a.type === SignerType.CONTRACT} />
+                      <Addr ctx={ctx} address={a.signer} />
                       {a.signer.toLowerCase() === me && <Pill ctx={ctx} tone="info" label="You" />}
                     </View>
                   ))}
@@ -713,7 +736,7 @@ function Create({ ctx, onBack }: { ctx: Ctx; onBack: () => void }) {
         <Text style={s.label}>Name (only in your wallet)</Text>
         <TextInput style={s.input} value={name} onChangeText={setName} maxLength={40} placeholder="Team treasury" placeholderTextColor={ctx.C.textMuted} testID="tms-name" />
         <Text style={s.label}>Signer 1 (you)</Text>
-        <Text style={[s.mono, s.static]} testID="tms-me">{account ? displayAccount(account, chainId) : '—'}</Text>
+        <Text style={[s.mono, s.static]} testID="tms-me">{account ? displayAccount(account) : '—'}</Text>
         {others.map((o, i) => (
           <View key={i}>
             <Text style={s.label}>Signer {i + 2}</Text>
@@ -780,7 +803,7 @@ function Add({ ctx, onBack }: { ctx: Ctx; onBack: () => void }) {
       <Header ctx={ctx} title="Add existing MultiSig" subtitle={`Any Litho Vault multisig on ${client.network.chain.name}`} onBack={onBack} />
       <Card ctx={ctx}>
         <Text style={s.label}>MultiSig address</Text>
-        <AddressField ctx={ctx} value={address} onChange={setAddress} placeholder="0x…" testID="tms-add-address" />
+        <AddressField ctx={ctx} value={address} onChange={setAddress} testID="tms-add-address" />
         <Text style={s.label}>Name (only in your wallet)</Text>
         <TextInput style={s.input} value={name} onChangeText={setName} maxLength={40} placeholder="Treasury" placeholderTextColor={ctx.C.textMuted} testID="tms-add-name" />
         <View style={[s.actions, { marginTop: 12 }]}>
