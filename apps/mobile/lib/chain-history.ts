@@ -146,8 +146,14 @@ const ETHERSCAN_STYLE: EtherscanSource[] = [
  *  A token transfer shows when its contract is here, or — on Blockscout —
  *  when the token has a market price; airdrop spam has neither. */
 const KNOWN_TOKENS: Record<number, Record<string, string>> = {
-  1:     { '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT', '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC' },
-  56:    { '0x55d398326f99059ff775485246999027b3197955': 'USDT', '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 'USDC' },
+  1:     { '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT', '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC',
+           // LITHO-ecosystem tokens the wallet lists (LAX has no market price yet).
+           '0xbd79b7db6f70979df7f4124e161eb3586085d140': 'LAX', '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2': 'IMAGE',
+           '0x75d86078625d1e2f612de2627d34c7bc411c18b8': 'AGII', '0x528605856a9eb9567688b0e912ed6961522a74d4': 'MUSA',
+           '0xc36983d3d9d379ddfb306dfb919099cb6730e355': 'COLLE' },
+  56:    { '0x55d398326f99059ff775485246999027b3197955': 'USDT', '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 'USDC',
+           '0x328fd053c4bb968875afd9ad0af36fcf4a0bdda9': 'AGII', '0x528605856a9eb9567688b0e912ed6961522a74d4': 'MUSA',
+           '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b': 'COLLE' },
   137:   { '0xc2132d05d31c914a87c6611c10748aeb04b58e8f': 'USDT', '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359': 'USDC' },
   42161: { '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9': 'USDT', '0xaf88d065e77c8cc2239327c5edb3a432268e5831': 'USDC' },
   8453:  { '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC' },

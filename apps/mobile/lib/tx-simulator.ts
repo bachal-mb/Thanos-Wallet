@@ -46,7 +46,7 @@ export class TransactionSimulator {
     if (!chain) throw new Error(`Unknown network ${request.chainId}`);
     const p         = getExtEvmProvider(chain.chainId);
     const issues:   SimulationIssue[] = [];
-    const netName   = chain.chainId === 9005 ? 'Lithosphere Mainnet' : chain.name;
+    const netName   = chain.chainId === 9005 ? 'Lithosphere' : chain.name;
     const nativeSym = chain.nativeSymbol;
 
     const isToken  = !!request.tokenAddress;

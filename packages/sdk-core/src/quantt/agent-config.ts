@@ -92,7 +92,7 @@ export const QUANTT_CHAIN_IDS: Readonly<Record<QuanttChain, number>> = {
   arbitrum: 42161, base: 8453, lithosphere: 9005, bnb: 56,
 };
 export const QUANTT_CHAIN_LABELS: Readonly<Record<QuanttChain, string>> = {
-  arbitrum: 'Arbitrum', base: 'Base', lithosphere: 'Lithosphere Mainnet', bnb: 'BNB Chain',
+  arbitrum: 'Arbitrum', base: 'Base', lithosphere: 'Lithosphere', bnb: 'BNB Chain',
 };
 /** Lithosphere's test networks (Makalu, Kamet): what Quantts reports while it
  *  still runs a Lithosphere agent off Mainnet. */

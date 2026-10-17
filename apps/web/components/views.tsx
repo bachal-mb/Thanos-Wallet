@@ -702,7 +702,7 @@ export function StakingView() {
           <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 380 }}>
             Lithosphere validator staking, LITHO/LitBTC LP, and the LAX
             stable-yield vault will appear here as soon as the staking
-            contract is deployed on Lithosphere Mainnet. Your active positions will
+            contract is deployed on Lithosphere. Your active positions will
             show up automatically.
           </div>
         </div>

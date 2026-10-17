@@ -47,7 +47,7 @@ export function getExtEvmChain(chainId: number): ExtEvmChain | undefined {
 
 export interface ExtEvmToken {
   chainId:  number;
-  symbol:   'USDT' | 'USDC';
+  symbol:   string;
   name:     string;
   address:  string;
   decimals: number;
@@ -68,6 +68,18 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   { chainId: 10,    symbol: 'USDC', name: 'USD Coin',   address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', decimals: 6  },
   { chainId: 43114, symbol: 'USDT', name: 'Tether USD', address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7', decimals: 6  },
   { chainId: 43114, symbol: 'USDC', name: 'USD Coin',   address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', decimals: 6  },
+  // LITHO-ecosystem tokens on external chains — the same verified list as the
+  // phone app and web (apps/mobile/lib/evm-external.ts).
+  { chainId: 56,    symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
+  { chainId: 1,     symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
+  { chainId: 56,    symbol: 'AGII',  name: 'AGII',           address: '0x328fd053c4bb968875afd9ad0af36fcf4a0bdda9', decimals: 18 },
+  { chainId: 1,     symbol: 'AGII',  name: 'AGII',           address: '0x75d86078625d1e2f612de2627d34c7bc411c18b8', decimals: 18 },
+  { chainId: 1,     symbol: 'IMAGE', name: 'Imagen Network', address: '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2', decimals: 18 },
+  { chainId: 1,     symbol: 'COLLE', name: 'Colle AI',       address: '0xc36983d3d9d379ddfb306dfb919099cb6730e355', decimals: 18 },
+  { chainId: 56,    symbol: 'COLLE', name: 'Colle AI',       address: '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b', decimals: 18 },
+  // LAX on Ethereum: the contract of the team's own LAX transfer (2026-10-17),
+  // verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
+  { chainId: 1,     symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xbd79b7db6f70979df7f4124e161eb3586085d140', decimals: 18 },
 ];
 
 export function extEvmTokensForChain(chainId: number): ExtEvmToken[] {

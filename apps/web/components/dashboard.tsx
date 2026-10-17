@@ -1051,13 +1051,13 @@ export function Dashboard() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             {/* Swap — primary DeFi action, top of the tab */}
             <div>
-              <SectionHead title="Swap" sub="Coming soon on Lithosphere Mainnet"/>
+              <SectionHead title="Swap" sub="Coming soon on Lithosphere"/>
               <div style={{
                 padding: '16px', textAlign: 'center',
                 background: 'var(--bg-elevated)', border: '1px dashed var(--border-default)',
                 borderRadius: 12, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5,
               }}>
-                Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+                Swaps will open on Lithosphere. Until then, send and receive work as usual.
               </div>
             </div>
 
@@ -1108,7 +1108,7 @@ export function Dashboard() {
             <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 380, lineHeight: 1.5 }}>
               NFTs you receive on Lithosphere (LEP-721 / LEP-1155) will appear here.
               Indexing pipeline ships with the next backend slice — until then,
-              look them up on Lithoscan, the Lithosphere Mainnet explorer.
+              look them up on Lithoscan, the Lithosphere explorer.
             </div>
             <a
               href="https://lithoscan.ai"

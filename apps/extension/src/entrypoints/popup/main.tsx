@@ -3907,7 +3907,7 @@ function MainnetWelcomeModal() {
         <img src="/icons/icon128.png" alt="Thanos" width={56} height={56} style={{ display: 'block', margin: '0 auto 14px', objectFit: 'contain' }}/>
         <h2 style={{ fontSize: 17, fontWeight: 800, margin: '0 0 6px' }}>Welcome to Thanos Wallet</h2>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 6px' }}>
-          Your wallet is on <strong>Lithosphere Mainnet</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
+          Your wallet is on <strong>Lithosphere</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
         </p>
         <p style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5, margin: '0 0 16px' }}>
           Testnets such as Makalu aren&apos;t included — add one in Settings → Networks &amp; tokens.
@@ -3963,7 +3963,7 @@ function TokenDetailModal({ sym, chainId, onClose, onSend, onReceive }: {
     : coins.find(c => c.sym.toLowerCase() === sym.toLowerCase());
   const price = coin?.priceUsd ?? 0;
   const network = coin?.sym === 'BTC' ? 'Bitcoin' : coin?.sym === 'SOL' ? 'Solana' : coin?.sym === 'ATOM' ? 'Cosmos Hub'
-    : coin?.chainId === 9005 ? 'Lithosphere Mainnet'
+    : coin?.chainId === 9005 ? 'Lithosphere'
     : evmChainOf(coin?.chainId)?.name ?? 'Unknown network';
   const [range, setRange] = useState<TokenRange>('1d');
   const [hist, setHist] = useState<TokenHistory | null>(null);
@@ -4985,7 +4985,7 @@ function SwapModal({ onClose, initialFrom }: { onClose: () => void; initialFrom?
       {(MULTX_CONFIG.enabled && mode === 'bridge') ? <MultXBridgePanel seed={seed}/> : mode === 'cross' ? <ExtCrossChainSwap bridge={false}/> : !SWAP_LIVE ? (
       <div className="modal-body" style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
         <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Swap is coming soon</div>
-        Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+        Swaps will open on Lithosphere. Until then, send and receive work as usual.
       </div>
       ) : (
       <div className="modal-body">

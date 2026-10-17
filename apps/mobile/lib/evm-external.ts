@@ -74,7 +74,7 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   // "wrapped tokens on BNB and other chains are missing"). Addresses from the
   // projects' CoinGecko listings, then INDEPENDENTLY verified on-chain
   // (symbol/decimals/name read via each chain's RPC) before inclusion.
-  // LITHO / FGPT / JOT / LAX external deployments are NOT listed anywhere
+  // LITHO / FGPT / JOT (and LAX beyond Ethereum) external deployments are NOT listed anywhere
   // verifiable — add only with team-confirmed addresses, never from memory.
   { chainId: 56,    symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
   { chainId: 1,     symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
@@ -83,6 +83,9 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   { chainId: 1,     symbol: 'IMAGE', name: 'Imagen Network', address: '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2', decimals: 18 },
   { chainId: 1,     symbol: 'COLLE', name: 'Colle AI',       address: '0xc36983d3d9d379ddfb306dfb919099cb6730e355', decimals: 18 },
   { chainId: 56,    symbol: 'COLLE', name: 'Colle AI',       address: '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b', decimals: 18 },
+  // LAX on Ethereum: the contract of the team's own LAX transfer (2026-10-17),
+  // verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
+  { chainId: 1,     symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xbd79b7db6f70979df7f4124e161eb3586085d140', decimals: 18 },
 ];
 
 export function extEvmTokensForChain(chainId: number): ExtEvmToken[] {

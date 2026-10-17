@@ -3257,7 +3257,7 @@ function MainnetWelcomeModal() {
         <img src="./images/Thanos_Logo.png" alt="Thanos" width={64} height={64} style={{ display: 'block', margin: '0 auto 16px', objectFit: 'contain' }}/>
         <h2 style={{ fontSize: 19, fontWeight: 800, margin: '0 0 6px' }}>Welcome to Thanos</h2>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55, margin: '0 0 6px' }}>
-          Your wallet is on <strong>Lithosphere Mainnet</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
+          Your wallet is on <strong>Lithosphere</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
         </p>
         <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, margin: '0 0 18px' }}>
           Testnets such as Makalu aren&apos;t included — add one in Settings → Custom networks &amp; tokens.
@@ -4185,7 +4185,7 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
   }, [networkId]); // eslint-disable-line react-hooks/exhaustive-deps -- network is a pure fn of networkId
 
   const meta = {
-    evm:  { label: 'Lithosphere / EVM', network: 'Lithosphere Mainnet + every EVM chain', color: '#627eea' },
+    evm:  { label: 'Lithosphere / EVM', network: 'Lithosphere + every EVM chain', color: '#627eea' },
     btc:  { label: 'Bitcoin',           network: 'Mainnet · Native SegWit (BIP84)',      color: '#f7931a' },
     sol:  { label: 'Solana',            network: 'Mainnet-Beta · ed25519',               color: '#14f195' },
     atom: { label: 'Cosmos Hub',        network: 'cosmoshub-4',                          color: '#2e3148' },
@@ -4467,7 +4467,7 @@ function SwapModal({ onClose, initialFrom }: { onClose: () => void; initialFrom?
         {(MULTX_CONFIG.enabled && mode === 'bridge') ? <MultXBridgePanel seed={seed}/> : !SWAP_LIVE ? (
           <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5, padding: '18px 4px' }}>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Swap is coming soon</div>
-            Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+            Swaps will open on Lithosphere. Until then, send and receive work as usual.
           </div>
         ) : (<>
         <label className="field-label">From</label>
@@ -4812,7 +4812,7 @@ function TransactionsView() {
 /* The previous version listed four fake pools with invented APYs
    (18.40% / 14.20% / 32.50% / 4.20%), invented TVLs and no-op Stake
    buttons, plus a fake "Solstice" active position. The staking contract
-   is not deployed on Lithosphere Mainnet yet — the web app already swapped its copy
+   is not deployed on Lithosphere yet — the web app already swapped its copy
    of this mock for an honest Coming-soon, and desktop now matches. */
 function StakingView() {
   return (
@@ -4945,7 +4945,7 @@ function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet,
         <Section icon={Wifi} title="Network" sub="Connection and RPC endpoints">
           <Row label="Default network" sub="Chain 9005 · rpc-mainnet.litho.ai — other networks under Custom networks & tokens">
             <span className="settings-network-pill">
-              <span className="settings-network-dot"/> Lithosphere Mainnet
+              <span className="settings-network-dot"/> Lithosphere
             </span>
           </Row>
           <Row label="WalletConnect" sub="Pair this wallet with a dApp via wc: link">
@@ -6143,7 +6143,7 @@ function NftsView() {
         <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 380, lineHeight: 1.5 }}>
           NFTs you receive on Lithosphere (LEP-721 / LEP-1155) will appear here.
           The indexing pipeline ships with the next backend slice — until then,
-          look them up on Lithoscan, the Lithosphere Mainnet explorer.
+          look them up on Lithoscan, the Lithosphere explorer.
         </div>
         <button className="settings-btn" style={{ marginTop: 4 }} onClick={() => openExternal('https://lithoscan.ai')}>
           Open Lithoscan <ChevRight2 size={14}/>

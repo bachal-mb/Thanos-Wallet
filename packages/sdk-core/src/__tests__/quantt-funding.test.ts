@@ -27,8 +27,8 @@ describe(`agentFundingOptions (${impl})`, () => {
   });
 
   it('funds Lithosphere with LAX and LITHO on Mainnet 9005 — it has no USDC', () => {
-    const lax = { sym: 'LAX', chain: 'lithosphere', chainId: 9005, label: 'Lithosphere Mainnet' };
-    const litho = { sym: 'LITHO', chain: 'lithosphere', chainId: 9005, label: 'Lithosphere Mainnet' };
+    const lax = { sym: 'LAX', chain: 'lithosphere', chainId: 9005, label: 'Lithosphere' };
+    const litho = { sym: 'LITHO', chain: 'lithosphere', chainId: 9005, label: 'Lithosphere' };
     expect(agentFundingOptions({ agent: { chains: ['lithosphere'] } })).toEqual([lax, litho]);
     expect(agentFundingOptions({ chains: ['lithosphere'], quoteAsset: 'LAX' })).toEqual([lax, litho]);
     expect(agentFundingOptions({ chains: ['base', 'lithosphere'], quoteAsset: 'USDC' })).toEqual([
@@ -74,7 +74,7 @@ describe(`agentFundingBlock (${impl})`, () => {
 
   it('holds a Mainnet deposit while Quantts runs the agent on Makalu', () => {
     const why = agentFundingBlock(lax, MAKALU_WALLET);
-    expect(why).toBe("Quantts still runs this agent on Lithosphere Makalu (testnet, chain 700777), so a deposit on Lithosphere Mainnet wouldn't be credited. Quantts has to move the agent to Lithosphere Mainnet first.");
+    expect(why).toBe("Quantts still runs this agent on Lithosphere Makalu (testnet, chain 700777), so a deposit on Lithosphere wouldn't be credited. Quantts has to move the agent to Lithosphere first.");
     expect(agentFundingBlock(litho, MAKALU_WALLET)).toBe(why);
   });
 

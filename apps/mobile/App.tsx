@@ -211,7 +211,7 @@ const APP_VERSION = `thanos-v${Constants.expoConfig?.version ?? '2.0.12'}`;
 /* EXCHANGE_ENABLED gates the whole Swap surface (Home quick action, token
    detail Swap button, the Swap screen, the Activity "Swap" filter). Off on
    iOS: same-chain swaps and cross-chain routing both run on MultX, which
-   isn't live on Lithosphere Mainnet yet, and App Review rejects a feature
+   isn't live on Lithosphere yet, and App Review rejects a feature
    that can't complete (client 2026-10-08: "remove only swap" for iOS). It
    stays on Android, where the screen explains it's unavailable. Within
    Swap, only the Bridge tab is dev-build only (see SWAP_MODE_TABS) — it
@@ -3901,7 +3901,7 @@ const networkVisKey = (chainId: number, sym: string): string =>
  *  toggle list. The Makalu testnet (700777) isn't built in any more
  *  (2026-09-29) — it can be added back as a custom network. */
 const ALL_NETWORKS: Array<{ key: string; name: string; sub: string }> = [
-  { key: networkVisKey(9005, 'LITHO'),   name: 'Lithosphere',        sub: 'Mainnet · chain 9005' },
+  { key: networkVisKey(9005, 'LITHO'),   name: 'Lithosphere',        sub: 'Chain 9005' },
   { key: networkVisKey(0, 'BTC'),        name: 'Bitcoin',            sub: 'Native' },
   { key: networkVisKey(0, 'SOL'),        name: 'Solana',             sub: 'Native' },
   { key: networkVisKey(0, 'ATOM'),       name: 'Cosmos Hub',         sub: 'Native' },
@@ -3971,7 +3971,7 @@ function useHiddenAssets() {
  *  module is dynamic-imported elsewhere in this file specifically to keep
  *  its heavier send-path deps out of the eager bundle. */
 const EXT_EVM_CHAIN_NAMES: Record<number, string> = {
-  9005: 'Lithosphere Mainnet', 1: 'Ethereum', 56: 'BNB Chain', 137: 'Polygon',
+  9005: 'Lithosphere', 1: 'Ethereum', 56: 'BNB Chain', 137: 'Polygon',
   8453: 'Base', 42161: 'Arbitrum', 59144: 'Linea', 10: 'Optimism', 43114: 'Avalanche',
 };
 /** Network name for the Send screen's FROM coin — the network the send is
@@ -5105,7 +5105,7 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
         <View style={[styles.networkSelector, { marginTop: 10 }]}>
           <View style={styles.netDot}/>
           <Text style={styles.networkSelectorText}>
-            {chain === 'lithosphere-mainnet' ? 'Lithosphere · Mainnet'
+            {chain === 'lithosphere-mainnet' ? 'Lithosphere'
              : chain === 'bitcoin'   ? 'Bitcoin · mainnet'
              : chain === 'solana'    ? 'Solana · mainnet-beta'
              : chain === 'cosmos'    ? 'Cosmos Hub · cosmoshub-4'
@@ -6091,7 +6091,7 @@ function SwapScreen({ goBack, initialFrom }: { goBack: () => void; initialFrom?:
       <View style={{ paddingHorizontal: 16, paddingVertical: 24, alignItems: 'center', gap: 6 }}>
         <Text style={{ color: C.textPrimary, fontSize: 15, fontWeight: '700' }}>Swap is coming soon</Text>
         <Text style={{ color: C.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center' }}>
-          Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+          Swaps will open on Lithosphere. Until then, send and receive work as usual.
         </Text>
       </View>
       ) : (
@@ -6204,7 +6204,7 @@ function EarnScreen({ goBack }: { goBack: () => void }) {
         </View>
         <Text style={{ fontSize: 16, fontWeight: '700', color: C.textPrimary, textAlign: 'center' }}>Staking opens with the protocol rollout</Text>
         <Text style={{ fontSize: 13, color: C.textMuted, textAlign: 'center', lineHeight: 20 }}>
-          Lithosphere validator staking, LITHO/LitBTC LP, and the LAX stable-yield vault will appear here as soon as the staking contract is deployed on Lithosphere Mainnet. Your active positions will show up automatically.
+          Lithosphere validator staking, LITHO/LitBTC LP, and the LAX stable-yield vault will appear here as soon as the staking contract is deployed on Lithosphere. Your active positions will show up automatically.
         </Text>
       </View>
     </ScrollView>
@@ -9475,7 +9475,7 @@ function MainnetWelcomeModal() {
           <Image source={require('./assets/images/Thanos_Logo_Transparent.png')} style={{ width: 60, height: 60, marginBottom: 14, resizeMode: 'contain' }}/>
           <Text style={{ color: C.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 6 }}>Welcome to Thanos Wallet</Text>
           <Text style={{ color: C.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center', marginBottom: 6 }}>
-            Your wallet is on Lithosphere Mainnet (chain 9005) — the Web4 home chain. The native coin is LITHO; Bitcoin, Solana, Cosmos and EVM networks are built in too.
+            Your wallet is on Lithosphere (chain 9005) — the Web4 home chain. The native coin is LITHO; Bitcoin, Solana, Cosmos and EVM networks are built in too.
           </Text>
           <Text style={{ color: C.textMuted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginBottom: 18 }}>
             Testnets such as Makalu aren't included — add one in Settings → Add network / token.

@@ -812,7 +812,7 @@ export function SendModal({ onClose, initialNetwork, initialCoin, initialAddress
     }
 
     /* ─── EVM branch ────────────────────────────────────────────────────
-       Lithosphere Mainnet, Ethereum / BNB / Polygon / Base / Arbitrum /
+       Lithosphere, Ethereum / BNB / Polygon / Base / Arbitrum /
        Linea / Optimism / Avalanche and custom networks: the native coin or a
        token, signed on and broadcast through that chain's own RPC. */
     if (isEvmSend && evmChainId !== null && evmChain) {
@@ -2553,7 +2553,7 @@ export function SwapModal({ onClose, initialFrom, fullScreen }: {
           : mode === 'cross' ? <CrossChainSwap bridge={false}/> : !SWAP_LIVE ? (
           <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5, padding: '18px 4px' }}>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Swap is coming soon</div>
-            Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+            Swaps will open on Lithosphere. Until then, send and receive work as usual.
           </div>
         ) : (<>
         <label className="field-label">From</label>
