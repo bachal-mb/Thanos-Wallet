@@ -110,9 +110,13 @@ export interface QuanttFundingOption {
 /** Lithosphere Mainnet has no USDC or USDT: agents there are funded with LAX
  *  and LITHO, which also pays the agent wallet's gas (client, 2026-10-04). */
 const LITHOSPHERE_FUNDING: readonly QuanttFundingAsset[] = ['LAX', 'LITHO'];
+/** The other Quantts chains LAX is deployed on (team contracts, 2026-10-17);
+ *  Arbitrum has none. */
+export const QUANTT_LAX_CHAINS: readonly QuanttChain[] = ['base', 'bnb'];
 
 /** What an agent's wallet is funded with: its quote asset (default USDC) on
- *  each chain it trades — LAX and LITHO on Lithosphere Mainnet — in the
+ *  each chain it trades, plus LAX where it's deployed (Base, BNB Chain) —
+ *  LAX and LITHO on Lithosphere Mainnet — in the
  *  agent's own order (Magma deposits assume the asset is already in the agent
  *  wallet). Funds sent on another network never reach the agent, so "Send to
  *  this address" must open on one of these. Reads only `chains` and
@@ -126,7 +130,9 @@ export function agentFundingOptions(raw: unknown): QuanttFundingOption[] {
   const sym: QuanttQuoteAsset = oneOf(QUANTT_QUOTE_ASSETS, quote) ? quote : 'USDC';
   const named = Array.isArray(o.chains) ? o.chains : typeof o.chain === 'string' ? [o.chain] : [];
   const chains = [...new Set(named.filter((c): c is QuanttChain => oneOf(QUANTT_CHAINS, c)))];
-  return chains.flatMap((chain) => (chain === 'lithosphere' ? LITHOSPHERE_FUNDING : [sym]).map((s) => ({
+  const assets = (chain: QuanttChain): readonly QuanttFundingAsset[] => (chain === 'lithosphere' ? LITHOSPHERE_FUNDING
+    : QUANTT_LAX_CHAINS.includes(chain) && sym !== 'LAX' ? [sym, 'LAX'] : [sym]);
+  return chains.flatMap((chain) => assets(chain).map((s) => ({
     sym: s, chain, chainId: QUANTT_CHAIN_IDS[chain], label: QUANTT_CHAIN_LABELS[chain],
   })));
 }

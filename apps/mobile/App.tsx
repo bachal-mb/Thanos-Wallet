@@ -91,6 +91,7 @@ import {
 import {
   toAgentConfig, diffAgentConfig, validateAgentUpdate, QUANTT_TIMEFRAMES, type QuanttAgentConfig,
   agentFundingBlock, agentWalletNetwork, withdrawalResumable, QUANTT_CHAIN_LABELS as QUANTT_FUNDING_LABELS,
+  QUANTT_LAX_CHAINS,
 } from './lib/quantt-agent-config';
 import {
   createVault, openVault, openVaultWithKey,
@@ -2639,7 +2640,8 @@ const QUANTT_CHAIN_META: Record<QuanttChain, { chainId: number; native: string }
 };
 interface QuanttDepositAsset { sym: string; chain: QuanttChain; chainId: number }
 /** Assets a user can fund an agent with, on each chain it trades: the agent's
- *  quote asset first, then stablecoins and the chain's native coin — on
+ *  quote asset first, then LAX where it's deployed (Base, BNB Chain),
+ *  stablecoins and the chain's native coin — on
  *  Lithosphere Mainnet, which has no stablecoins, LAX and LITHO (LITHO also
  *  pays the agent's gas). Empty when no known chain is named: never guess. */
 function quanttDepositAssets(chains: string[], quoteAsset?: string): QuanttDepositAsset[] {
@@ -2647,7 +2649,8 @@ function quanttDepositAssets(chains: string[], quoteAsset?: string): QuanttDepos
   const out: QuanttDepositAsset[] = [];
   for (const chain of valid) {
     const { chainId, native } = QUANTT_CHAIN_META[chain];
-    const syms = chain === 'lithosphere' ? ['LAX', native] : [quoteAsset ?? 'USDC', 'USDC', 'USDT', native];
+    const syms = chain === 'lithosphere' ? ['LAX', native]
+      : [quoteAsset ?? 'USDC', ...(QUANTT_LAX_CHAINS.includes(chain) ? ['LAX'] : []), 'USDC', 'USDT', native];
     for (const sym of syms) if (!out.some((a) => a.sym === sym && a.chain === chain)) out.push({ sym, chain, chainId });
   }
   return out;

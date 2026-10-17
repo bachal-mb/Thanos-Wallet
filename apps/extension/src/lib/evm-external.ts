@@ -77,9 +77,11 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   { chainId: 1,     symbol: 'IMAGE', name: 'Imagen Network', address: '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2', decimals: 18 },
   { chainId: 1,     symbol: 'COLLE', name: 'Colle AI',       address: '0xc36983d3d9d379ddfb306dfb919099cb6730e355', decimals: 18 },
   { chainId: 56,    symbol: 'COLLE', name: 'Colle AI',       address: '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b', decimals: 18 },
-  // LAX on Ethereum: the contract of the team's own LAX transfer (2026-10-17),
-  // verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
+  // LAX: the contracts from the team's own deploy transactions (2026-10-17),
+  // each verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
   { chainId: 1,     symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xbd79b7db6f70979df7f4124e161eb3586085d140', decimals: 18 },
+  { chainId: 56,    symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0x11125e44843170467a7955d29776d63760ea4b6e', decimals: 18 },
+  { chainId: 8453,  symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xe7645444eb4e8e04d886c7038dd0152d331d3680', decimals: 18 },
 ];
 
 export function extEvmTokensForChain(chainId: number): ExtEvmToken[] {

@@ -20,9 +20,18 @@ const MAINNET_WALLET = { ...MAKALU_WALLET, chainName: 'Lithosphere Mainnet', cha
 for (const [impl, { agentFundingOptions, agentWalletNetwork, agentFundingBlock, withdrawalResumable }] of [['sdk-core', core], ['mobile mirror', mobile]] as const) {
 describe(`agentFundingOptions (${impl})`, () => {
   it('offers the quote asset on each chain the agent trades, in its order', () => {
-    expect(agentFundingOptions({ chains: ['base', 'arbitrum'], quoteAsset: 'USDT' })).toEqual([
-      { sym: 'USDT', chain: 'base', chainId: 8453, label: 'Base' },
+    expect(agentFundingOptions({ chains: ['arbitrum'], quoteAsset: 'USDT' })).toEqual([
       { sym: 'USDT', chain: 'arbitrum', chainId: 42161, label: 'Arbitrum' },
+    ]);
+  });
+
+  it('adds LAX on Base and BNB Chain, where it is deployed', () => {
+    expect(agentFundingOptions({ chains: ['base', 'arbitrum', 'bnb'], quoteAsset: 'USDT' })).toEqual([
+      { sym: 'USDT', chain: 'base', chainId: 8453, label: 'Base' },
+      { sym: 'LAX', chain: 'base', chainId: 8453, label: 'Base' },
+      { sym: 'USDT', chain: 'arbitrum', chainId: 42161, label: 'Arbitrum' },
+      { sym: 'USDT', chain: 'bnb', chainId: 56, label: 'BNB Chain' },
+      { sym: 'LAX', chain: 'bnb', chainId: 56, label: 'BNB Chain' },
     ]);
   });
 
@@ -32,7 +41,8 @@ describe(`agentFundingOptions (${impl})`, () => {
     expect(agentFundingOptions({ agent: { chains: ['lithosphere'] } })).toEqual([lax, litho]);
     expect(agentFundingOptions({ chains: ['lithosphere'], quoteAsset: 'LAX' })).toEqual([lax, litho]);
     expect(agentFundingOptions({ chains: ['base', 'lithosphere'], quoteAsset: 'USDC' })).toEqual([
-      { sym: 'USDC', chain: 'base', chainId: 8453, label: 'Base' }, lax, litho,
+      { sym: 'USDC', chain: 'base', chainId: 8453, label: 'Base' },
+      { sym: 'LAX', chain: 'base', chainId: 8453, label: 'Base' }, lax, litho,
     ]);
   });
 
@@ -40,7 +50,7 @@ describe(`agentFundingOptions (${impl})`, () => {
     expect(agentFundingOptions({ chain: 'bnb', quote_asset: 'LAX' })).toEqual([
       { sym: 'LAX', chain: 'bnb', chainId: 56, label: 'BNB Chain' },
     ]);
-    expect(agentFundingOptions({ chains: ['base', 'solana', 'base'] }).map((o) => o.chainId)).toEqual([8453]);
+    expect(agentFundingOptions({ chains: ['base', 'solana', 'base'] }).map((o) => `${o.sym}@${o.chainId}`)).toEqual(['USDC@8453', 'LAX@8453']);
   });
 
   it('returns nothing rather than guessing a network', () => {
