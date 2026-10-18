@@ -21,9 +21,10 @@ COPY packages/api-client/package.json   packages/api-client/
 COPY packages/sdk-core/package.json     packages/sdk-core/
 COPY packages/sdk-react/package.json    packages/sdk-react/
 COPY packages/ui/package.json           packages/ui/
+COPY packages/multisig/package.json     packages/multisig/
 
-# Vendored MultX bridge SDK tarball — web's package.json references it via
-# `file:../../vendor/...`, so it must be present before pnpm install resolves.
+# Vendored SDK tarballs (MultX bridge, Litho Vault) — package.json files reference
+# them via `file:../../vendor/...`, so they must be present before pnpm install resolves.
 COPY vendor/ vendor/
 
 # --ignore-scripts skips native compile (usb, tiny-secp256k1, etc.) which only
@@ -36,6 +37,7 @@ COPY packages/api-client   packages/api-client
 COPY packages/sdk-core     packages/sdk-core
 COPY packages/sdk-react    packages/sdk-react
 COPY packages/ui           packages/ui
+COPY packages/multisig     packages/multisig
 
 # NEXT_PUBLIC_* vars are inlined into the client bundle at build time —
 # they must be set as ENV BEFORE `next build` runs, otherwise they end
@@ -51,6 +53,8 @@ ARG NEXT_PUBLIC_MULTX_API_URL
 ARG NEXT_PUBLIC_MULTX_ENABLED=false
 ARG NEXT_PUBLIC_MULTX_MANIFEST_URL
 ARG NEXT_PUBLIC_MULTX_MANIFEST_SHA256
+ARG NEXT_PUBLIC_MULTISIG_INDEXER_URL
+ARG NEXT_PUBLIC_MULTISIG_APP_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_REOWN_PROJECT_ID=${NEXT_PUBLIC_REOWN_PROJECT_ID}
 ENV NEXT_PUBLIC_INDEXER_URL=${NEXT_PUBLIC_INDEXER_URL}
@@ -58,6 +62,8 @@ ENV NEXT_PUBLIC_MULTX_API_URL=${NEXT_PUBLIC_MULTX_API_URL}
 ENV NEXT_PUBLIC_MULTX_ENABLED=${NEXT_PUBLIC_MULTX_ENABLED}
 ENV NEXT_PUBLIC_MULTX_MANIFEST_URL=${NEXT_PUBLIC_MULTX_MANIFEST_URL}
 ENV NEXT_PUBLIC_MULTX_MANIFEST_SHA256=${NEXT_PUBLIC_MULTX_MANIFEST_SHA256}
+ENV NEXT_PUBLIC_MULTISIG_INDEXER_URL=${NEXT_PUBLIC_MULTISIG_INDEXER_URL}
+ENV NEXT_PUBLIC_MULTISIG_APP_URL=${NEXT_PUBLIC_MULTISIG_APP_URL}
 
 # Build (next.config.js has output: 'standalone')
 RUN pnpm --filter @thanos/web build

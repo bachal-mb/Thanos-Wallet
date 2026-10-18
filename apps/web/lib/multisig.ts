@@ -14,6 +14,14 @@ import { walletFromSeed } from './signer';
 
 let cached: MultisigNetwork | null = null;
 
+/** The Litho Vault indexer answers same-origin requests only (it sends no CORS headers), so the
+ *  browser reaches it through this site's /multisig-indexer proxy (next.config.js rewrites). */
+function indexerUrl(): string | undefined {
+  const configured = process.env.NEXT_PUBLIC_MULTISIG_INDEXER_URL;
+  if (!configured || typeof window === 'undefined') return configured;
+  return `${window.location.origin}/multisig-indexer`;
+}
+
 export function webMultisigNetwork(): MultisigNetwork {
   if (cached) return cached;
   cached = multisigNetwork(
@@ -29,7 +37,7 @@ export function webMultisigNetwork(): MultisigNetwork {
       FREEZE_GUARD:   process.env.NEXT_PUBLIC_MULTISIG_FREEZE_GUARD,
       IMPLEMENTATION: process.env.NEXT_PUBLIC_MULTISIG_IMPLEMENTATION,
       DEPLOY_BLOCK:   process.env.NEXT_PUBLIC_MULTISIG_DEPLOY_BLOCK,
-      INDEXER_URL:    process.env.NEXT_PUBLIC_MULTISIG_INDEXER_URL,
+      INDEXER_URL:    indexerUrl(),
       APP_URL:        process.env.NEXT_PUBLIC_MULTISIG_APP_URL,
     },
     // Reads go through the same-origin proxy for RPCs that send no CORS headers.

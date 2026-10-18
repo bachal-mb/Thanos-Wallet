@@ -113,6 +113,21 @@ const createWindow = () => {
     headers['Access-Control-Allow-Headers'] = ['Content-Type, Accept, Origin, Authorization'];
     callback({ responseHeaders: headers });
   });
+  /* CORS shim for Thanos MultiSig's indexer (Litho Vault): it answers
+     same-origin requests only and sends no Access-Control-Allow-Origin, so
+     this file:// renderer's reads and gas-free approval POSTs were blocked.
+     The web app proxies it through thanos.fi instead. Scoped to the indexer
+     path (VITE_MULTISIG_INDEXER_URL in apps/desktop/.env.production). */
+  sess.webRequest.onHeadersReceived({ urls: ['https://lithovault.ai/indexer/*'] }, (details, callback) => {
+    const headers: Record<string, string | string[]> = { ...(details.responseHeaders ?? {}) };
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase().startsWith('access-control-')) delete headers[k];
+    }
+    headers['Access-Control-Allow-Origin']  = ['*'];
+    headers['Access-Control-Allow-Methods'] = ['GET, POST, OPTIONS'];
+    headers['Access-Control-Allow-Headers'] = ['Content-Type, Accept, Origin'];
+    callback({ responseHeaders: headers });
+  });
   sess.setPermissionRequestHandler((_wc, permission, callback) => {
     const p = String(permission);
     callback(p === 'hid' || p === 'usb');

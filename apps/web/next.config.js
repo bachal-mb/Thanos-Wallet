@@ -3,6 +3,17 @@
  * static one below. */
 const { buildCsp } = require('./lib/csp');
 
+/** Thanos MultiSig's indexer (NEXT_PUBLIC_MULTISIG_INDEXER_URL), proxied at
+ *  /multisig-indexer when it's an https URL; null when unset. */
+function multisigIndexer() {
+  try {
+    const u = new URL(process.env.NEXT_PUBLIC_MULTISIG_INDEXER_URL || '');
+    return u.protocol === 'https:' ? u.toString().replace(/\/$/, '') : null;
+  } catch {
+    return null;
+  }
+}
+
 const SECURITY_HEADERS = [
   { key: 'X-Frame-Options',           value: 'DENY' },
   { key: 'X-Content-Type-Options',    value: 'nosniff' },
@@ -76,6 +87,10 @@ const nextConfig = {
       { source: '/rpc/makalu',   destination: 'https://rpc.litho.ai/' },
       { source: '/rpc/makalu-2', destination: 'https://rpc-2.litho.ai/' },
       { source: '/rpc/kamet',    destination: 'https://rpc-3.litho.ai/' },
+      // Thanos MultiSig's indexer (Litho Vault) answers same-origin requests
+      // only — no CORS headers — so the browser reaches it through this proxy
+      // (apps/web/lib/multisig.ts).
+      ...(multisigIndexer() ? [{ source: '/multisig-indexer/:path*', destination: `${multisigIndexer()}/:path*` }] : []),
       // Apple universal-links manifest for the WalletConnect + Connect/Launch
       // handoff (thanos.fi/wc, thanos.fi/app → Thanos mobile). Internal
       // rewrite, so it's served with the route handler's application/json +

@@ -15,7 +15,9 @@
       "env": {
         "EAS_NO_VCS": "1",
         "EXPO_PUBLIC_ENV": "production",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_MULTISIG_INDEXER_URL": "https://lithovault.ai/indexer",
+        "EXPO_PUBLIC_MULTISIG_APP_URL": "https://lithovault.ai"
       },
       "android": {
         "buildType": "apk",
@@ -34,7 +36,9 @@
       "node": "20.19.4",
       "env": {
         "EXPO_PUBLIC_ENV": "production",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_MULTISIG_INDEXER_URL": "https://lithovault.ai/indexer",
+        "EXPO_PUBLIC_MULTISIG_APP_URL": "https://lithovault.ai"
       },
       "ios": {
         "distribution": "store",

@@ -99,6 +99,10 @@ services:
         NEXT_PUBLIC_MULTX_ENABLED:         ${NEXT_PUBLIC_MULTX_ENABLED:-false}
         NEXT_PUBLIC_MULTX_MANIFEST_URL:    ${NEXT_PUBLIC_MULTX_MANIFEST_URL:-}
         NEXT_PUBLIC_MULTX_MANIFEST_SHA256: ${NEXT_PUBLIC_MULTX_MANIFEST_SHA256:-}
+        # Thanos MultiSig: gas-free approvals (Litho Vault indexer relay) and
+        # the links to Litho Vault's own settings.
+        NEXT_PUBLIC_MULTISIG_INDEXER_URL:  ${NEXT_PUBLIC_MULTISIG_INDEXER_URL:-https://lithovault.ai/indexer}
+        NEXT_PUBLIC_MULTISIG_APP_URL:      ${NEXT_PUBLIC_MULTISIG_APP_URL:-https://lithovault.ai}
     container_name: thanos-web
     restart: unless-stopped
     environment:
