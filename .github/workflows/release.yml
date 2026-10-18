@@ -81,13 +81,23 @@ jobs:
       # WXT's `zip` script produces a ready-for-upload .zip per browser
       # target. Safari needs the macOS Xcode converter (run on a Mac);
       # the raw safari-mv2 build directory is the upstream input to that.
-      - run: pnpm --filter @thanos/extension zip
-      - run: pnpm --filter @thanos/extension zip:firefox
-      - run: pnpm --filter @thanos/extension build:safari
+      # Copied out of .output after each build: upload-artifact v4 skips
+      # hidden paths, so uploading from .output/ uploaded nothing.
+      - name: Build Chrome and Firefox packages
+        run: |
+          mkdir -p extension-artifacts
+          pnpm --filter @thanos/extension zip
+          cp apps/extension/.output/*.zip extension-artifacts/
+          pnpm --filter @thanos/extension zip:firefox
+          cp apps/extension/.output/*.zip extension-artifacts/
+      - name: Build Safari source package
+        run: |
+          pnpm --filter @thanos/extension build:safari
+          cp -R apps/extension/.output/safari-mv2 extension-artifacts/
       - name: SHA-256 every artifact
         shell: bash
         run: |
-          cd apps/extension/.output
+          cd extension-artifacts
           for f in *.zip; do
             [ -e "$f" ] || continue
             sha256sum "$f" > "$f.sha256"
@@ -95,10 +105,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: extension-zips
+          if-no-files-found: error
           path: |
-            apps/extension/.output/*.zip
-            apps/extension/.output/*.sha256
-            apps/extension/.output/safari-mv2/
+            extension-artifacts/*.zip
+            extension-artifacts/*.sha256
+            extension-artifacts/safari-mv2/
           retention-days: 30
 
   # ─── 3. Desktop — matrix across macOS + Windows + Linux ─────────────

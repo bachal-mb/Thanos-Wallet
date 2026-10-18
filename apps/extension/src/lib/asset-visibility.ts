@@ -73,7 +73,7 @@ export async function toggleAssetVisibility(key: string): Promise<void> {
 /** Static catalog of every built-in network, for the "Manage networks"
  *  toggle list in Settings. (Makalu isn't built in any more — 2026-09-29.) */
 export const ALL_NETWORKS: Array<{ key: string; name: string; sub: string }> = [
-  { key: networkVisKey(9005, 'LITHO'),      name: 'Lithosphere',        sub: 'Mainnet · chain 9005' },
+  { key: networkVisKey(9005, 'LITHO'),      name: 'Lithosphere',        sub: 'Chain 9005' },
   { key: networkVisKey(undefined, 'BTC'),   name: 'Bitcoin',            sub: 'Native' },
   { key: networkVisKey(undefined, 'SOL'),   name: 'Solana',             sub: 'Native' },
   { key: networkVisKey(undefined, 'ATOM'),  name: 'Cosmos Hub',         sub: 'Native' },

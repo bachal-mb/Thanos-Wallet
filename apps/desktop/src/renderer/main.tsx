@@ -14,7 +14,13 @@ import {
   getVisibleAccountIndices, hideAccount,
   MAX_ACCOUNTS, isPrivateKeyWallet, isPrivateKeyString,
   hydrateVaultFromKeychain,
+  parseWalletSet, openWallet, listWallets, addWallet, switchWallet, openAccount,
+  addAccountToWallet, renameWallet, removeWallet, readWalletSecret, readWalletAccounts,
+  currentWalletId, setWalletOrigin, getWalletAddresses, setWalletAddresses, seedWords,
+  FIRST_WALLET_ID, MAX_WALLET_NAME_LEN, MAX_ACCOUNT_NAME_LEN,
+  type WalletInfo,
 } from './vault';
+import { WalletsPanel, RenameDialog, deriveAccountAddresses, walletOriginLabel, type AddWalletStart } from './WalletsPanel';
 import { UpdateBanner } from './components/UpdateBanner';
 import { DappBrowserOverlay } from './components/DappBrowserOverlay';
 import { ModalPortal } from './components/ModalPortal';
@@ -192,6 +198,7 @@ const ChevRight2 = Ic(<polyline points="9 18 15 12 9 6"/>);
 const User      = Ic(<><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></>);
 const Trash     = Ic(<><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></>);
 const Unlock2   = Ic(<><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></>);
+const WalletGlyph = Ic(<><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></>);
 const ListIc    = Ic(<><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>);
 
 
@@ -2687,9 +2694,9 @@ function PortfolioChart({ holdings }: { holdings: Holding[] }) {
 
 /* ──────────────────────── Security panel ──────────────────────── */
 function SecurityPanel({ onOpenSettings }: { onOpenSettings: () => void }) {
-  const [backedUp, setBackedUp] = useState<boolean | null>(null);
-  useEffect(() => { setBackedUp(isSeedBackedUp()); }, []);
-  if (backedUp === null) return null;
+  // Read on every render (a localStorage read): the flag is per wallet, so it
+  // has to follow a wallet switch.
+  const backedUp = isSeedBackedUp();
   return (
     <button
       className="card"
@@ -3078,9 +3085,10 @@ function TxDetailModal({ tx, onClose }: { tx: DisplayTx; onClose: () => void }) 
   );
 }
 
-/* Change the wallet password: verify the current one, re-encrypt the SAME seed
-   under the new password, and re-cache the session key so the app stays
-   unlocked. Uses the proven createVault/openVault pair. */
+/* Change the wallet password: verify the current one, re-encrypt the SAME
+   plaintext (every wallet in the vault) under the new password, and re-cache
+   the session key so the app stays unlocked. Uses the proven
+   createVault/openVault pair. */
 function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [cur, setCur] = useState('');
   const [nw, setNw]   = useState('');
@@ -3144,6 +3152,8 @@ function ExportSeedModal({ onClose }: { onClose: () => void }) {
   const [busy, setBusy]   = useState(false);
   const [hidden, setHidden] = useState(true);
   const [copied, setCopied] = useState(false);
+  // Set when the vault holds several wallets, so it's clear whose keys these are.
+  const [walletName, setWalletName] = useState<string | null>(null);
   const acctIdx = getActiveAccountIndex();
   const reveal = async () => {
     setBusy(true); setErr('');
@@ -3152,7 +3162,11 @@ function ExportSeedModal({ onClose }: { onClose: () => void }) {
       if (!v) { setErr('No wallet found on this device.'); return; }
       const r = await openVault(v, pwd);
       if (!r) { setErr('Wrong password.'); return; }
-      const secret = r.mnemonic.trim();
+      // The vault may hold several wallets: reveal the open one's secret.
+      const set = parseWalletSet(r.mnemonic);
+      const open = set.wallets.find(w => w.id === currentWalletId()) ?? set.wallets[0];
+      setWalletName(set.wallets.length > 1 ? open.name : null);
+      const secret = open.secret.trim();
       if (isPrivateKeyString(secret)) {
         setPkOnly(true); setPk(secret); setTab('pk'); setWords([]);
         return;
@@ -3184,6 +3198,9 @@ function ExportSeedModal({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <>
+            {walletName && (
+              <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: 0 }}>Keys of the open wallet, <strong>{walletName}</strong>. Your other wallets have their own.</p>
+            )}
             {!pkOnly && (
               <div style={{ display: 'flex', gap: 4, background: 'var(--bg-elevated)', padding: 4, borderRadius: 10, border: '1px solid var(--border-default)' }}>
                 {(['phrase', 'pk'] as const).map(t => (
@@ -3258,7 +3275,7 @@ function MainnetWelcomeModal() {
         <img src="./images/Thanos_Logo.png" alt="Thanos" width={64} height={64} style={{ display: 'block', margin: '0 auto 16px', objectFit: 'contain' }}/>
         <h2 style={{ fontSize: 19, fontWeight: 800, margin: '0 0 6px' }}>Welcome to Thanos</h2>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55, margin: '0 0 6px' }}>
-          Your wallet is on <strong>Lithosphere Mainnet</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
+          Your wallet is on <strong>Lithosphere</strong> (chain&nbsp;9005). The native coin is <strong>LITHO</strong>; Bitcoin, Solana, Cosmos and EVM networks are built in too.
         </p>
         <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, margin: '0 0 18px' }}>
           Testnets such as Makalu aren&apos;t included — add one in Settings → Custom networks &amp; tokens.
@@ -4186,7 +4203,7 @@ function ReceiveModal({ onClose, addresses }: { onClose: () => void; addresses?:
   }, [networkId]); // eslint-disable-line react-hooks/exhaustive-deps -- network is a pure fn of networkId
 
   const meta = {
-    evm:  { label: 'Lithosphere / EVM', network: 'Lithosphere Mainnet + every EVM chain', color: '#627eea' },
+    evm:  { label: 'Lithosphere / EVM', network: 'Lithosphere + every EVM chain', color: '#627eea' },
     btc:  { label: 'Bitcoin',           network: 'Mainnet · Native SegWit (BIP84)',      color: '#f7931a' },
     sol:  { label: 'Solana',            network: 'Mainnet-Beta · ed25519',               color: '#14f195' },
     atom: { label: 'Cosmos Hub',        network: 'cosmoshub-4',                          color: '#2e3148' },
@@ -4468,7 +4485,7 @@ function SwapModal({ onClose, initialFrom }: { onClose: () => void; initialFrom?
         {(MULTX_CONFIG.enabled && mode === 'bridge') ? <MultXBridgePanel seed={seed}/> : !SWAP_LIVE ? (
           <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5, padding: '18px 4px' }}>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Swap is coming soon</div>
-            Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+            Swaps will open on Lithosphere. Until then, send and receive work as usual.
           </div>
         ) : (<>
         <label className="field-label">From</label>
@@ -4813,7 +4830,7 @@ function TransactionsView() {
 /* The previous version listed four fake pools with invented APYs
    (18.40% / 14.20% / 32.50% / 4.20%), invented TVLs and no-op Stake
    buttons, plus a fake "Solstice" active position. The staking contract
-   is not deployed on Lithosphere Mainnet yet — the web app already swapped its copy
+   is not deployed on Lithosphere yet — the web app already swapped its copy
    of this mock for an honest Coming-soon, and desktop now matches. */
 function StakingView() {
   return (
@@ -4836,7 +4853,12 @@ function StakingView() {
 }
 
 /* ──────────────────────── Settings view ──────────────────────── */
-function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet, onWalletBackedUp }: { toggleTheme: () => void; isDark: boolean; walletAddr: string; onLock: () => void; onDeleteWallet: () => void; onWalletBackedUp: boolean }) {
+function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet, onWalletBackedUp, walletCount, openWalletName, onManageWallets }: {
+  toggleTheme: () => void; isDark: boolean; walletAddr: string; onLock: () => void; onDeleteWallet: () => void; onWalletBackedUp: boolean;
+  /** Wallets in the vault, and the open one's name — for the Wallets row and Delete wallet. */
+  walletCount: number; openWalletName: string;
+  onManageWallets: () => void;
+}) {
   // LIVE display currency — the pick reformats every price in the app via
   // the shared sdk-core fx engine (falls back to USD if a rate is missing).
   const [currency, setCurrency] = useState<DisplayCurrency>(getDisplayCurrency());
@@ -4913,6 +4935,17 @@ function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet,
           </Row>
         </Section>
 
+        <Section icon={WalletGlyph} title="Wallets" sub="Several recovery phrases or keys in one app">
+          <Row
+            label="Wallets & accounts"
+            sub={walletCount > 1
+              ? `${walletCount} wallets · open: ${openWalletName}`
+              : 'Add, import, switch, rename or remove wallets'}
+          >
+            <button className="settings-btn" onClick={onManageWallets}><WalletGlyph size={14}/> Manage</button>
+          </Row>
+        </Section>
+
         <NetworksSection Section={Section}/>
         <CustomAssetsSection Section={Section}/>
         <AddressBookSection Section={Section}/>
@@ -4946,7 +4979,7 @@ function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet,
         <Section icon={Wifi} title="Network" sub="Connection and RPC endpoints">
           <Row label="Default network" sub="Chain 9005 · rpc-mainnet.litho.ai — other networks under Custom networks & tokens">
             <span className="settings-network-pill">
-              <span className="settings-network-dot"/> Lithosphere Mainnet
+              <span className="settings-network-dot"/> Lithosphere
             </span>
           </Row>
           <Row label="WalletConnect" sub="Pair this wallet with a dApp via wc: link">
@@ -5001,9 +5034,11 @@ function SettingsView({ toggleTheme, isDark, walletAddr, onLock, onDeleteWallet,
         <Section icon={Shield} title="Danger zone" sub="Irreversible — read before you click">
           <Row
             label="Delete wallet"
-            sub={onWalletBackedUp
-              ? 'Erases this wallet from this computer. Restorable with your recovery phrase.'
-              : 'You have NOT backed up your recovery phrase — deleting now loses these funds permanently.'}
+            sub={walletCount > 1
+              ? `Removes “${openWalletName}” from this computer. Your other wallets stay.`
+              : onWalletBackedUp
+                ? 'Erases this wallet from this computer. Restorable with your recovery phrase.'
+                : 'You have NOT backed up your recovery phrase — deleting now loses these funds permanently.'}
           >
             <button
               type="button"
@@ -5469,12 +5504,31 @@ async function fetchLithoBalance(addr: string): Promise<string | null> {
 type OnboardStep = 'welcome' | 'create-warn' | 'create-show' | 'create-confirm' | 'create-password'
                  | 'import' | 'import-password' | 'unlock' | 'done';
 
-function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[], pwd: string) => void; hasVault: boolean }) {
-  const [step, setStep] = useState<OnboardStep>(hasVault ? 'unlock' : 'welcome');
+/** Add-wallet mode: the same create (with the backup + verify steps) and
+ *  import steps, adding a wallet to the unlocked vault — no password step,
+ *  it's encrypted with the vault's own key (vault.ts addWallet). */
+interface AddWalletMode {
+  start: AddWalletStart;
+  /** The wallet was added and vault.ts has opened it. */
+  onAdded: (secret: string) => void;
+  onCancel: () => void;
+}
+
+function OnboardingFlow({ onComplete, hasVault, addMode }: { onComplete: (seed: string[], pwd: string) => void; hasVault: boolean; addMode?: AddWalletMode }) {
+  const [step, setStep] = useState<OnboardStep>(
+    addMode ? (addMode.start === 'create' ? 'create-warn' : 'import')
+    : hasVault ? 'unlock' : 'welcome',
+  );
   // A vault that turns up after mount (legacy migration at boot) means Unlock,
   // not the create/import welcome.
-  useEffect(() => { if (hasVault) setStep(s => (s === 'welcome' ? 'unlock' : s)); }, [hasVault]);
-  const [seed, setSeed] = useState<string[]>([]);
+  useEffect(() => { if (hasVault && !addMode) setStep(s => (s === 'welcome' ? 'unlock' : s)); }, [hasVault, addMode]);
+  const [seed, setSeed] = useState<string[]>(() => (addMode?.start === 'create' ? generateSeedPhrase(12) : []));
+  /** Back from the first step of add-wallet mode closes it. */
+  const backTo = (to: OnboardStep) => {
+    if (addMode && to === 'welcome') addMode.onCancel();
+    else setStep(to);
+  };
+  const [addErr, setAddErr] = useState('');
   const [seedLen, setSeedLen] = useState<12 | 24>(12);
   const [importInput, setImportInput] = useState('');
   /* Seed auto-mask — parity with web. After 30 s on the create-show
@@ -5558,9 +5612,11 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
     try {
       const vault = await createVault(seed.join(' '), password);
       saveVault(vault);
-      setSeedBackedUp(true); // create flow includes seed verification
       const opened = await openVault(vault, password);
       if (opened) cacheSessionKey(opened.key);
+      await openWallet(seed.join(' ')); // the new vault's one wallet
+      setWalletOrigin(currentWalletId(), 'created'); // labels it in Wallets & accounts
+      setSeedBackedUp(true); // create flow includes seed verification
       onComplete(seed, password);
     } finally {
       setVaultBusy(false);
@@ -5582,11 +5638,50 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
     try {
       const vault = await createVault(secret, password);
       saveVault(vault);
-      setSeedBackedUp(true); // imported — user already holds the secret
       const opened = await openVault(vault, password);
       if (opened) cacheSessionKey(opened.key);
+      await openWallet(secret); // the new vault's one wallet
+      setWalletOrigin(currentWalletId(), 'imported'); // labels it in Wallets & accounts
+      setSeedBackedUp(true); // imported — user already holds the secret
       onComplete(isPk ? [secret] : secret.split(/\s+/), password);
     } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  /* Add-wallet mode: the verified new phrase, or the import, goes into the
+     unlocked vault next to the other wallets, and is opened. */
+  const addingRef = useRef(false); // a double click lands before `vaultBusy` re-renders
+  const finishAdd = async (kind: 'create' | 'import') => {
+    if (!addMode || vaultBusy || addingRef.current) return;
+    let secret: string;
+    if (kind === 'create') {
+      secret = seed.join(' ');
+    } else if (addMode.start === 'privateKey') {
+      const hex = importInput.trim().replace(/^0x/i, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) { setAddErr('Enter a 64-character hex private key (with or without 0x).'); return; }
+      secret = `0x${hex.toLowerCase()}`;
+      try { new Wallet(secret); } catch { setAddErr('That private key could not be parsed.'); return; }
+    } else {
+      const words = importInput.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (![12, 15, 18, 21, 24].includes(words.length)) {
+        setAddErr(`That’s ${words.length} words — a recovery phrase has 12, 15, 18, 21 or 24.`);
+        return;
+      }
+      if (!isValidMnemonic(words.join(' '))) { setAddErr('That recovery phrase isn’t valid — check for typos.'); return; }
+      secret = words.join(' ');
+    }
+    addingRef.current = true;
+    setVaultBusy(true);
+    setAddErr('');
+    try {
+      const r = await addWallet(secret, undefined, kind === 'create' ? 'created' : 'imported');
+      if ('error' in r) { setAddErr(r.error); return; }
+      addMode.onAdded(r.wallet.secret);
+    } catch {
+      setAddErr('Something went wrong — nothing was changed.');
+    } finally {
+      addingRef.current = false;
       setVaultBusy(false);
     }
   };
@@ -5608,7 +5703,9 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
         return;
       }
       cacheSessionKey(opened.key);
-      onComplete(opened.mnemonic.split(' '), unlockPwd);
+      // The vault may hold several wallets: open the one in use last time.
+      const w = await openWallet(opened.mnemonic);
+      onComplete(seedWords(w.secret), unlockPwd);
     } finally {
       setVaultBusy(false);
     }
@@ -5676,7 +5773,7 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
               <li>Thanos team will never ask for this phrase</li>
             </ul>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn-outline" style={{ flex: 1, height: 42 }} onClick={() => setStep('welcome')}>Back</button>
+              <button className="btn-outline" style={{ flex: 1, height: 42 }} onClick={() => backTo('welcome')}>Back</button>
               <button className="btn-primary" style={{ flex: 1 }} onClick={() => setStep('create-show')}>I understand</button>
             </div>
           </>
@@ -5767,9 +5864,15 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
               ))}
             </div>
             {orderMismatch && <div className="onboard-err">Order doesn't match. Tap slots to undo and try again.</div>}
+            {addMode && addErr && <div className="onboard-err">{addErr}</div>}
             <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
               <button className="btn-outline" style={{ flex: 1, height: 42 }} onClick={() => setStep('create-show')}>Back</button>
-              <button className="btn-primary" style={{ flex: 1 }} disabled={!allConfirmed} onClick={() => setStep('create-password')}>Continue</button>
+              {/* Adding a wallet: no password step — it joins the vault under
+                  the password it already has. */}
+              <button className="btn-primary" style={{ flex: 1 }} disabled={!allConfirmed || vaultBusy}
+                onClick={() => (addMode ? void finishAdd('create') : setStep('create-password'))}>
+                {addMode ? (vaultBusy ? 'Adding…' : 'Add wallet') : 'Continue'}
+              </button>
             </div>
           </>
         )}
@@ -5793,34 +5896,47 @@ function OnboardingFlow({ onComplete, hasVault }: { onComplete: (seed: string[],
         )}
 
         {/* IMPORT ──────────────────────────────────────────── */}
-        {step === 'import' && (
-          <>
-            <h1 className="onboard-title">Import wallet</h1>
-            <p className="onboard-sub">Paste a 12/15/18/21/24-word recovery phrase, or a single account&apos;s private key (64-hex, with or without 0x).</p>
-            <textarea
-              className="field-input"
-              style={{ height: 90, resize: 'none', fontFamily: 'Geist Mono, monospace', fontSize: 12 }}
-              placeholder="word1 word2 word3 …   or   0x…"
-              value={importInput}
-              onChange={e => setImportInput(e.target.value)}
-            />
-            {(() => {
-              const v = importInput.trim();
-              const isPk = /^(0x)?[0-9a-fA-F]{64}$/.test(v);
-              const wc = v.split(/\s+/).filter(Boolean).length;
-              const ok = isPk || [12, 15, 18, 21, 24].includes(wc);
-              return (
-                <>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{isPk ? 'Private key — imports one EVM account' : `${wc} words`}</div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-                    <button className="btn-outline" style={{ flex: 1, height: 42 }} onClick={() => setStep('welcome')}>Back</button>
-                    <button className="btn-primary" style={{ flex: 1 }} disabled={!ok} onClick={() => setStep('import-password')}>Continue</button>
-                  </div>
-                </>
-              );
-            })()}
-          </>
-        )}
+        {step === 'import' && (() => {
+          // Adding a wallet asks for one kind (the add-wallet choice);
+          // onboarding takes either.
+          const only = addMode?.start === 'privateKey' ? 'key' : addMode ? 'phrase' : null;
+          const v = importInput.trim();
+          const isPk = /^(0x)?[0-9a-fA-F]{64}$/.test(v);
+          const wc = v.split(/\s+/).filter(Boolean).length;
+          const ok = only === 'key' ? isPk : only === 'phrase' ? !isPk && [12, 15, 18, 21, 24].includes(wc) : isPk || [12, 15, 18, 21, 24].includes(wc);
+          return (
+            <>
+              <h1 className="onboard-title">{only === 'key' ? 'Import private key' : only === 'phrase' ? 'Import recovery phrase' : 'Import wallet'}</h1>
+              <p className="onboard-sub">
+                {only === 'key'
+                  ? 'Paste the account’s private key (64 hex characters, with or without 0x). It adds one EVM account — no Bitcoin, Solana or Cosmos.'
+                  : only === 'phrase'
+                    ? 'Paste a 12, 15, 18, 21 or 24-word recovery phrase. It joins your other wallets under the same password.'
+                    : <>Paste a 12/15/18/21/24-word recovery phrase, or a single account&apos;s private key (64-hex, with or without 0x).</>}
+              </p>
+              <textarea
+                className="field-input"
+                style={{ height: 90, resize: 'none', fontFamily: 'Geist Mono, monospace', fontSize: 12 }}
+                placeholder={only === 'key' ? '0x…' : only === 'phrase' ? 'word1 word2 word3 …' : 'word1 word2 word3 …   or   0x…'}
+                value={importInput}
+                onChange={e => { setImportInput(e.target.value); setAddErr(''); }}
+                autoFocus={!!addMode}
+                spellCheck={false}
+              />
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                {isPk ? 'Private key — imports one EVM account' : `${wc} words`}
+              </div>
+              {addMode && addErr && <div className="onboard-err">{addErr}</div>}
+              <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                <button className="btn-outline" style={{ flex: 1, height: 42 }} onClick={() => backTo('welcome')}>Back</button>
+                <button className="btn-primary" style={{ flex: 1 }} disabled={!ok || vaultBusy}
+                  onClick={() => (addMode ? void finishAdd('import') : setStep('import-password'))}>
+                  {addMode ? (vaultBusy ? 'Adding…' : 'Add wallet') : 'Continue'}
+                </button>
+              </div>
+            </>
+          );
+        })()}
 
         {/* IMPORT — PASSWORD ───────────────────────────────── */}
         {step === 'import-password' && (
@@ -6144,7 +6260,7 @@ function NftsView() {
         <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 380, lineHeight: 1.5 }}>
           NFTs you receive on Lithosphere (LEP-721 / LEP-1155) will appear here.
           The indexing pipeline ships with the next backend slice — until then,
-          look them up on Lithoscan, the Lithosphere Mainnet explorer.
+          look them up on Lithoscan, the Lithosphere explorer.
         </div>
         <button className="settings-btn" style={{ marginTop: 4 }} onClick={() => openExternal('https://lithoscan.ai')}>
           Open Lithoscan <ChevRight2 size={14}/>
@@ -6249,18 +6365,167 @@ function App() {
   const [acctTick, setAcctTick] = useState(0);
   const [acctMsg, setAcctMsg]   = useState<string | null>(null);
 
-  const renameAccount = (idx: number) => {
-    const current = getCustomAccountName(idx) ?? '';
-    const next = window.prompt(`Rename ${getAccountName(idx)}`, current);
-    if (next == null) return;                 // cancelled
-    setAccountName(idx, next);
+  /* Rename an account (or a wallet) in a small dialog — window.prompt, used
+     here before, doesn't exist in Electron (it throws), so rename never opened. */
+  const [renameTarget, setRenameTarget] = useState<{ kind: 'account'; idx: number } | { kind: 'wallet'; id: string } | null>(null);
+  const renameAccount = (idx: number) => setRenameTarget({ kind: 'account', idx });
+
+  /* ─── Wallets — several secrets in the one vault (vault.ts) ──────────────
+     Each wallet keeps its own accounts. Opening one makes its secret the
+     seed (here and in the main-process signer) and its account settings the
+     ones vault.ts reads; walletSeed / walletAddr then flow through the
+     contexts exactly like an account switch, so Home, Activity, Send /
+     Receive, WalletConnect, the dApp browser and Quantt all follow it. Same
+     model as the phone and the extension. */
+  const [wallets, setWallets] = useState<WalletInfo[]>([]);
+  const [activeWalletId, setActiveWalletId] = useState(FIRST_WALLET_ID);
+  const [walletBusy, setWalletBusy] = useState(false);
+  const [walletMsg, setWalletMsg] = useState<string | null>(null);
+  const [walletsOpen, setWalletsOpen] = useState(false);
+  const [addWalletStart, setAddWalletStart] = useState<AddWalletStart | null>(null);
+  const refreshWallets = async () => {
+    const r = await listWallets().catch(() => null);
+    if (r) { setWallets(r.wallets); setActiveWalletId(r.activeId); }
+  };
+  useEffect(() => {
+    if (unlocked) { void refreshWallets(); return; }
+    setWallets([]); setWalletsOpen(false); setAddWalletStart(null); setRenameTarget(null); setWalletMsg(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshWallets only calls stable setters
+  }, [unlocked]);
+  const openWalletName = wallets.find(w => w.id === activeWalletId)?.name ?? 'Wallet 1';
+  const openWalletsPanel = () => { setWalletMsg(null); setAcctMsg(null); setWalletsOpen(true); };
+
+  /** Show the wallet vault.ts has just opened (its settings are the ones
+   *  vault.ts now reads). */
+  const showOpenedWallet = (secret: string) => {
+    const words = seedWords(secret);
+    const pk = isPrivateKeyWallet(words);
+    setWalletSeed(words);
+    setActiveWalletId(currentWalletId());
+    setActiveIdx(pk ? 0 : getActiveAccountIndex());
+    setAccountCountState(pk ? 1 : getAccountCount());
     setAcctTick(t => t + 1);
+    // Signing happens in the main process with the seed it was given.
+    void window.thanosDesktop?.signer?.setSeed(words.join(' ')).catch(() => { /* no bridge */ });
+  };
+  const LOCKED_RETRY = 'Couldn’t open the wallet — lock and unlock Thanos, then try again.';
+  const openWalletById = async (id: string) => {
+    if (walletBusy || id === activeWalletId) return;
+    setWalletBusy(true); setWalletMsg(null);
+    try {
+      const w = await switchWallet(id);
+      if (w) { showOpenedWallet(w.secret); setWalletsOpen(false); }
+      else setWalletMsg(LOCKED_RETRY);
+    } finally { setWalletBusy(false); }
+  };
+  /** Open account `idx` of any wallet in one step (in the open wallet it's a
+   *  plain account switch). */
+  const openAccountIn = async (id: string, idx: number) => {
+    if (walletBusy) return;
+    if (id === activeWalletId) { switchAccount(idx); setWalletsOpen(false); return; }
+    setWalletBusy(true); setWalletMsg(null);
+    try {
+      const w = await openAccount(id, idx);
+      if (w) { showOpenedWallet(w.secret); setWalletsOpen(false); }
+      else setWalletMsg(LOCKED_RETRY);
+    } finally { setWalletBusy(false); }
+  };
+  /** "+ Add account" under a wallet — any recovery-phrase wallet, not only
+   *  the open one: its next derived account, opened. */
+  const addAccountIn = async (id: string) => {
+    if (walletBusy) return;
+    setWalletMsg(null);
+    if (id === activeWalletId) { addAccount(); return; }
+    setWalletBusy(true);
+    try {
+      const r = await addAccountToWallet(id);
+      if ('error' in r) { setWalletMsg(r.error); return; }
+      showOpenedWallet(r.wallet.secret);
+    } finally { setWalletBusy(false); }
+  };
+  const saveWalletName = async (id: string, name: string) => {
+    if (!name.trim()) return;
+    if (await renameWallet(id, name)) await refreshWallets();
+    else setWalletMsg('Couldn’t rename the wallet — lock and unlock Thanos, then try again.');
   };
 
-  /* Delete wallet — erases the vault from this computer. Two confirms, and the
-     first states the actual consequence based on whether the recovery phrase
-     was backed up: without a backup this is permanent loss. */
+  /** Every listed address of a wallet — the open one from its seed; another
+   *  from the address cache, derived from its secret if some are missing. */
+  const walletAddressesOf = async (id: string): Promise<string[]> => {
+    const isOpen = id === activeWalletId;
+    const visible = isOpen ? (pkWallet ? [0] : getVisibleAccountIndices()) : readWalletAccounts(id).visible;
+    const known = getWalletAddresses(id);
+    if (visible.every(i => known[i])) return visible.map(i => known[i]);
+    const words = isOpen ? walletSeed : seedWords((await readWalletSecret(id)) ?? '');
+    const derived = deriveAccountAddresses(words, visible);
+    setWalletAddresses(id, derived);
+    return isPrivateKeyWallet(words) ? [derived[0]].filter(Boolean) : visible.map(i => derived[i]).filter(Boolean);
+  };
+
+  /* Remove a wallet (the last one runs Delete wallet below, which erases the
+     vault). Funds don't block it, as with accounts: what it holds is checked
+     first, and the user is reminded that only its recovery phrase (or key)
+     reaches the funds afterwards. Copy follows the phone's. */
+  const confirmRemoveWallet = async (id: string) => {
+    if (walletBusy) return;
+    // Decide from the vault itself, never from a list still loading: the
+    // full delete erases every wallet.
+    const fresh = await listWallets().catch(() => null);
+    if (!fresh) { setWalletMsg(LOCKED_RETRY); return; }
+    if (fresh.wallets.length <= 1) { setWalletsOpen(false); fullDeleteWallet(); return; }
+    const w = fresh.wallets.find(x => x.id === id);
+    if (!w) return;
+    setWalletBusy(true);
+    setWalletMsg('Checking what this wallet holds…');
+    let usd: number | null = null;
+    let threshold = 1;
+    const backedUp = isSeedBackedUp(id);
+    try {
+      const m = await import('./account-balance');
+      threshold = m.DELETE_MAX_USD;
+      const list = await walletAddressesOf(id);
+      const vals = list.length ? await Promise.all(list.map(a => m.accountUsdValue(a))) : [null];
+      usd = vals.some(v => v == null) ? null : vals.reduce<number>((s, v) => s + (v ?? 0), 0);
+    } catch { usd = null; } finally { setWalletBusy(false); setWalletMsg(null); }
+
+    const label = `“${w.name}”`;
+    const noun = w.kind === 'key' ? 'private key' : 'recovery phrase';
+    const held = usd == null
+      ? 'We couldn’t check what this wallet holds.'
+      : usd > threshold
+        ? `It holds about ${withCurrencyAffix(convertFromUsd(usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}.`
+        : null;
+    const body = held
+      ? `${backedUp ? '' : `You have NOT backed up ${label}'s ${noun}. `}${held} Removing it only takes it off this computer — any funds stay at its address on the blockchain, and only its ${noun} can get them back.\n\nMake sure its ${noun} is written down before you continue.`
+      : backedUp
+        ? `Remove ${label} from this computer? You can restore it later with its ${noun}. Your other wallets stay.`
+        : `You have NOT backed up ${label}'s ${noun}.\n\nIf you remove it now, its funds are gone permanently — nobody can recover them.`;
+    if (!window.confirm(`Remove ${w.name}?\n\n${body}`)) return;
+    if (!window.confirm('Are you sure? This cannot be undone.')) return;
+    setWalletBusy(true);
+    try {
+      const wasOpen = id === currentWalletId();
+      const r = await removeWallet(id);
+      if ('error' in r) { setWalletMsg(r.error); return; }
+      if (wasOpen) showOpenedWallet(r.next.secret);
+      await refreshWallets();
+    } finally { setWalletBusy(false); }
+  };
+
+  /* Delete wallet (Settings → Danger zone). Several wallets: only the open
+     one goes, through the remove flow above, and the others stay. The last
+     one erases the vault from this computer: two confirms, and the first
+     states the actual consequence based on whether the recovery phrase was
+     backed up — without a backup this is permanent loss. */
   const deleteWallet = () => {
+    void (async () => {
+      const fresh = await listWallets().catch(() => null);
+      if (!fresh) { window.alert(LOCKED_RETRY); return; }
+      if (fresh.wallets.length > 1) { await confirmRemoveWallet(currentWalletId()); return; }
+      fullDeleteWallet();
+    })();
+  };
+  const fullDeleteWallet = () => {
     const backedUp = isSeedBackedUp();
     const first = backedUp
       ? 'Delete this wallet from this computer?\n\nYou can restore it later with your recovery phrase.'
@@ -6269,8 +6534,11 @@ function App() {
     if (!window.confirm('Are you sure? This cannot be undone.')) return;
     clearVault();
     clearSessionKey();
+    void window.thanosDesktop?.signer?.clearSeed().catch(() => { /* no bridge */ });
     void forgetQuanttSession().catch(() => { /* nothing to forget */ });
     setWalletSeed([]);
+    setWallets([]);
+    setActiveWalletId(FIRST_WALLET_ID);
     setUnlocked(false);
     setHasVault(false);
   };
@@ -6322,6 +6590,13 @@ function App() {
   const canAddAccount = !pkWallet && accountCount < MAX_ACCOUNTS;
   const portfolio  = usePortfolio(walletAddr, walletSeed);
 
+  // Cache the open account's address (public, no secret) so Wallets &
+  // accounts lists it without re-deriving, whichever wallet is open later.
+  useEffect(() => {
+    if (!unlocked || walletSeed.length === 0 || !/^0x[0-9a-fA-F]{40}$/.test(walletAddr) || /^0x0{40}$/.test(walletAddr)) return;
+    setWalletAddresses(activeWalletId, { [pkWallet ? 0 : activeIdx]: walletAddr });
+  }, [unlocked, walletSeed, walletAddr, activeWalletId, activeIdx, pkWallet]);
+
   useEffect(() => {
     if (!unlocked || walletSeed.length === 0) return;
     let cancelled = false;
@@ -6353,14 +6628,18 @@ function App() {
       // ...unless the window sat idle past the auto-lock timeout before this
       // load: the idle watcher couldn't lock a renderer that was reloading.
       if (idleExpired(sessionStorage, readAutoLockMinutes(localStorage))) { clearSessionKey(); return; }
-      const mnemonic = await openVaultWithKey(vault, key);
-      if (mnemonic) {
-        setWalletSeed(mnemonic.split(' '));
+      const plaintext = await openVaultWithKey(vault, key);
+      if (plaintext) {
+        // The vault may hold several wallets: open the one in use before the reload.
+        const w = await openWallet(plaintext);
+        const words = seedWords(w.secret);
+        setWalletSeed(words);
+        setActiveWalletId(w.id);
         setUnlocked(true);
         // Push the seed into the main process so subsequent signing
         // happens there, not in the renderer. Best-effort — older shells
         // without the bridge just keep using the renderer signer.
-        try { await window.thanosDesktop?.signer?.setSeed(mnemonic); } catch { /* no bridge */ }
+        try { await window.thanosDesktop?.signer?.setSeed(words.join(' ')); } catch { /* no bridge */ }
       } else {
         clearSessionKey();
       }
@@ -6417,6 +6696,7 @@ function App() {
         hasVault={hasVault}
         onComplete={(seed, _pwd) => {
           setWalletSeed(seed);
+          setActiveWalletId(currentWalletId());
           setHasVault(true);
           setUnlocked(true);
           // Mirror the seed into the main-process signer cache.
@@ -6546,6 +6826,11 @@ function App() {
                           </>
                         )}
                       </div>
+                      {wallets.length > 1 && (
+                        <div className="menu-wallet" title={`${openWalletName} · ${walletOriginLabel(wallets.find(w => w.id === activeWalletId) ?? wallets[0])}`}>
+                          {openWalletName}
+                        </div>
+                      )}
                       <div className="menu-addr" title={walletLitho}><HiAddr value={walletLitho} head={8} tail={6}/></div>
                     </div>
                   </div>
@@ -6654,6 +6939,20 @@ function App() {
                     </>
                   )}
 
+                  {/* Every wallet and its accounts, add / import another
+                      wallet — the phone's "Wallets & accounts". Always here,
+                      private-key wallet open or not. */}
+                  {walletSeed.length > 0 && (
+                    <>
+                      <div className="menu-divider"/>
+                      <button className="menu-item" onClick={() => { setAccountMenu(false); openWalletsPanel(); }}>
+                        <WalletGlyph size={16}/>
+                        Wallets &amp; accounts
+                        {wallets.length > 1 && <span className="menu-item-count">{wallets.length} wallets</span>}
+                      </button>
+                    </>
+                  )}
+
                   <div className="menu-divider"/>
 
                   <button className="menu-item menu-item-danger" onClick={() => { lock(); setAccountMenu(false); }}>
@@ -6697,6 +6996,82 @@ function App() {
       {modal === 'receive' && <ReceiveModal onClose={() => setModal(null)} addresses={{ evm: addrs.evm, btc: addrs.btc, sol: addrs.sol }}/>}
       {modal === 'swap'    && <SwapModal    onClose={() => { setModal(null); setSeedSym(null); }} initialFrom={seedSym ?? undefined}/>}
 
+      {/* Wallets & accounts — every wallet with its accounts (WalletsPanel.tsx). */}
+      {walletsOpen && (
+        <WalletsPanel
+          wallets={wallets}
+          activeWalletId={activeWalletId}
+          walletSeed={walletSeed}
+          activeIdx={activeIdx}
+          accountCount={accountCount}
+          acctTick={acctTick}
+          busy={walletBusy}
+          msg={walletMsg ?? acctMsg}
+          formatAddr={(a) => shortAddress(lithoDisplayAddr(a, LITHO_MAINNET))}
+          onClose={() => setWalletsOpen(false)}
+          onOpenAccount={(id, idx) => { void openAccountIn(id, idx); }}
+          onOpenWallet={(id) => { void openWalletById(id); }}
+          onAddAccount={(id) => { void addAccountIn(id); }}
+          onRenameAccount={renameAccount}
+          onDeleteAccount={(idx) => { void deleteAccount(idx); }}
+          onRenameWallet={(id) => setRenameTarget({ kind: 'wallet', id })}
+          onRemoveWallet={(id) => { void confirmRemoveWallet(id); }}
+          onAddWallet={(start) => { setWalletsOpen(false); setAddWalletStart(start); }}
+        />
+      )}
+
+      {renameTarget?.kind === 'account' && (
+        <RenameDialog
+          key={`a${renameTarget.idx}`}
+          title="Rename account"
+          sub={`Shown in place of "Account ${renameTarget.idx + 1}". Leave empty to reset.`}
+          initial={getCustomAccountName(renameTarget.idx) ?? ''}
+          placeholder={`Account ${renameTarget.idx + 1}`}
+          maxLength={MAX_ACCOUNT_NAME_LEN}
+          allowEmpty
+          onSave={(name) => { setAccountName(renameTarget.idx, name); setAcctTick(t => t + 1); }}
+          onClose={() => setRenameTarget(null)}
+        />
+      )}
+      {renameTarget?.kind === 'wallet' && (
+        <RenameDialog
+          key={`w${renameTarget.id}`}
+          title="Rename wallet"
+          sub="Shown in Wallets & accounts and the account menu."
+          initial={wallets.find(w => w.id === renameTarget.id)?.name ?? ''}
+          placeholder="Wallet name"
+          maxLength={MAX_WALLET_NAME_LEN}
+          allowEmpty={false}
+          onSave={(name) => { void saveWalletName(renameTarget.id, name); }}
+          onClose={() => setRenameTarget(null)}
+        />
+      )}
+
+      {/* Add wallet — the onboarding create / import steps in add mode: the
+          new wallet joins the vault under the same password and opens; Back
+          on the first step (or Cancel) closes. */}
+      {addWalletStart && (
+        <ModalPortal>
+          <div className="add-wallet-overlay">
+            <button type="button" className="add-wallet-cancel" onClick={() => setAddWalletStart(null)}>Cancel</button>
+            <OnboardingFlow
+              key={addWalletStart}
+              hasVault
+              onComplete={() => { /* add mode finishes through onAdded */ }}
+              addMode={{
+                start: addWalletStart,
+                onCancel: () => setAddWalletStart(null),
+                onAdded: (secret) => {
+                  setAddWalletStart(null);
+                  showOpenedWallet(secret);
+                  void refreshWallets();
+                },
+              }}
+            />
+          </div>
+        </ModalPortal>
+      )}
+
       {/* Workspace */}
       <div className="workspace">
         <div className="main-area">
@@ -6708,7 +7083,8 @@ function App() {
           {view === 'discover'     && <DiscoverView/>}
           {view === 'nfts'         && <NftsView/>}
           {view === 'multisig'     && <MultiSigView address={walletSeed.length > 0 ? addrs.evm : ''} accountIndex={activeIdx} unlocked={walletSeed.length > 0}/>}
-          {view === 'settings'     && <SettingsView toggleTheme={toggleTheme} isDark={isDark} walletAddr={walletAddr} onLock={lock} onDeleteWallet={deleteWallet} onWalletBackedUp={isSeedBackedUp()}/>}
+          {view === 'settings'     && <SettingsView toggleTheme={toggleTheme} isDark={isDark} walletAddr={walletAddr} onLock={lock} onDeleteWallet={deleteWallet} onWalletBackedUp={isSeedBackedUp()}
+            walletCount={wallets.length} openWalletName={openWalletName} onManageWallets={openWalletsPanel}/>}
         </div>
 
         {view !== 'settings' && (

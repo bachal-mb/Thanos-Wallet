@@ -113,6 +113,21 @@ https://thanos.fi/privacy is the canonical document.
 ## What's New in this version (release notes, 4,000 chars max)
 
 ```
+• Keep several wallets in Thanos: create a new one or import another
+  recovery phrase or private key, without removing the one you have.
+  “Wallets & accounts” lists each wallet with its accounts, grouped as
+  created or imported, with “Add account” under every wallet.
+• Wallets and accounts get their own icons.
+• Every token you hold now shows up. Lesser-known ones sit behind
+  “Show hidden assets”, and you can hide or show any of them.
+• LAX on Ethereum, BNB Chain and Base: see it, receive it and send it.
+  Quantt agents on Base and BNB Chain can be funded with LAX.
+• Lithosphere addresses show as litho1… everywhere, and transactions
+  show their Lithosphere hash first, as on LithoScan.
+• Send tells you what to fix when it can’t go ahead yet, and clear
+  messages replace technical errors.
+• Scan a QR code from a photo or screenshot: “Upload QR image” in the
+  scanner. The scanner also says when the camera can’t start.
 • Activity now shows every past transaction — including ones made
   before Thanos or from another wallet — on Lithosphere, Ethereum, Base,
   Arbitrum, Polygon, Optimism, Avalanche, Bitcoin, Solana and Cosmos.

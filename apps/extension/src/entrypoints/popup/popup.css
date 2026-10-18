@@ -977,3 +977,204 @@ html[data-sidepanel] #root {
 }
 .ob2-reset-link:hover { color: var(--text-primary); }
 .ob2-reset-link.ob2-reset-armed { color: var(--red); font-weight: 700; }
+
+/* ─── Wallets & accounts (account chip / Settings → Manage wallets) ───
+   Every wallet as a card with its accounts nested under it, in sections by
+   how it came in — the phone's model (apps/mobile/App.tsx). Link-blue and the
+   badge colours are tuned per theme to stay ≥4.5:1 on their backgrounds. */
+:root, [data-theme="dark"] {
+  --ws-link:        #7ea6fa;
+  --ws-key-bg:      rgba(245,158,11,0.16);
+  --ws-key-fg:      #fbbf24;
+}
+[data-theme="light"] {
+  --ws-link:        #1d4fc4;
+  --ws-key-bg:      rgba(245,158,11,0.14);
+  --ws-key-fg:      #9a4a06;
+}
+.acct-chip:focus-visible, .ws-sheet button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.ws-sheet { position: relative; }
+.ws-busy { width: 56px; text-align: right; font-size: 10px; color: var(--text-muted); }
+.ws-body { padding: 10px 14px 12px; gap: 0; }
+.ws-note {
+  font-size: 11.5px; line-height: 1.45; color: var(--text-secondary);
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  border-radius: 9px; padding: 8px 10px; margin-bottom: 10px;
+}
+.ws-section + .ws-section { margin-top: 6px; }
+.ws-section-title {
+  font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-muted); margin: 4px 2px 7px;
+}
+
+.ws-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  margin-bottom: 8px;
+}
+[data-theme="light"] .ws-card { box-shadow: 0 1px 2px rgba(15,15,20,0.04); }
+/* The open wallet. */
+.ws-card.open { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+
+.ws-wallet {
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px 6px 4px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ws-wallet-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px; border: none; border-radius: 10px;
+  background: none; color: inherit; text-align: left;
+}
+.ws-wallet-main:hover:not(:disabled) { background: var(--bg-hover); }
+.ws-card.open .ws-wallet-main { cursor: default; }
+.ws-card.open .ws-wallet-main:hover { background: none; }
+.ws-wicon {
+  width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--blue-dim); color: var(--ws-link);
+}
+.ws-wicon.key { background: var(--ws-key-bg); color: var(--ws-key-fg); }
+.ws-wmeta { display: flex; flex-direction: column; min-width: 0; }
+.ws-wname {
+  font-size: 13px; font-weight: 800; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-wsub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 10.5px; color: var(--text-muted); }
+
+/* Type badges — the phone's colours; text ≥4.5:1 on its tint in both themes. */
+.ws-badge { padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.ws-badge-created  { background: rgba(59,122,247,0.16);  color: #7ea6fa; }
+.ws-badge-phrase   { background: rgba(133,133,154,0.16); color: #c4c4d2; }
+.ws-badge-imported { background: rgba(139,125,247,0.16); color: #b9aef9; }
+.ws-badge-key      { background: var(--ws-key-bg);       color: var(--ws-key-fg); }
+[data-theme="light"] .ws-badge-created  { background: rgba(59,122,247,0.12);  color: #1d4fc4; }
+[data-theme="light"] .ws-badge-phrase   { background: rgba(133,133,154,0.14); color: #4b4b57; }
+[data-theme="light"] .ws-badge-imported { background: rgba(139,125,247,0.12); color: #5b48d6; }
+
+.ws-ibtn {
+  width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--text-muted);
+}
+.ws-ibtn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.ws-ibtn.danger { color: var(--red); }
+.ws-ibtn:disabled { opacity: 0.4; cursor: not-allowed; color: var(--text-muted); }
+
+/* "…" menu: Rename / Remove. The scrim closes it on any outside click. */
+.ws-menu-scrim { position: fixed; inset: 0; z-index: 4; }
+.ws-menu {
+  position: absolute; top: 44px; right: 6px; z-index: 5;
+  min-width: 156px; padding: 4px;
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.24);
+}
+.ws-menu button {
+  display: flex; width: 100%; align-items: center; gap: 8px;
+  padding: 8px 10px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-primary);
+  font-size: 12px; font-weight: 600; text-align: left;
+}
+.ws-menu button:hover { background: var(--bg-hover); }
+.ws-menu button.danger { color: var(--red); }
+
+/* An account under its wallet. */
+.ws-acct { display: flex; align-items: center; gap: 2px; padding: 2px 6px 2px 14px; }
+.ws-acct.on { background: var(--blue-dim); }
+.ws-card > .ws-acct:last-child { border-radius: 0 0 13px 13px; }
+.ws-acct-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 4px; border: none; border-radius: 8px;
+  background: none; color: inherit; text-align: left;
+}
+.ws-acct:not(.on) .ws-acct-main:hover:not(:disabled) { background: var(--bg-hover); }
+.ws-aicon {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-hover); color: var(--text-secondary);
+}
+.ws-acct.on .ws-aicon { background: var(--blue); color: #fff; }
+.ws-ameta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ws-aname {
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-acct.on .ws-aname { font-weight: 800; }
+.ws-aaddr { font-size: 10.5px; color: var(--text-muted); font-family: 'Geist Mono', monospace; margin-top: 1px; white-space: nowrap; }
+.ws-aaddr.loading { font-family: inherit; font-style: italic; }
+/* On the active row tint, muted text drops under 4.5:1 — one step up. */
+.ws-acct.on .ws-aaddr { color: var(--text-secondary); }
+.ws-check { color: var(--ws-link); flex-shrink: 0; }
+
+.ws-add-acct {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 9px 18px; border: none; border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 13px 13px;
+  background: transparent; color: var(--ws-link);
+  font-size: 12px; font-weight: 700; text-align: left;
+}
+.ws-add-acct:hover:not(:disabled) { background: var(--bg-hover); }
+.ws-add-acct:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ws-footer {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 14px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ws-add-wallet {
+  height: 40px; width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  border-radius: 11px; border: 1px solid rgba(59,122,247,0.32);
+  background: var(--blue-dim); color: var(--ws-link);
+  font-size: 13px; font-weight: 700;
+}
+.ws-add-wallet:hover:not(:disabled) { filter: brightness(1.08); }
+.ws-add-wallet:disabled { opacity: 0.5; cursor: not-allowed; }
+.ws-lock {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px; border: none; background: none;
+  color: var(--red); font-size: 12px; font-weight: 600;
+}
+
+/* Add wallet: the three choices. */
+.ws-add-intro { font-size: 12px; line-height: 1.5; color: var(--text-secondary); margin: 2px 2px 12px; }
+.ws-opt {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 12px; margin-bottom: 8px;
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 12px;
+  color: var(--text-primary); text-align: left;
+}
+.ws-opt:hover:not(:disabled) { background: var(--bg-hover); }
+.ws-opt:disabled { opacity: 0.5; cursor: not-allowed; }
+.ws-opt-icon {
+  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--blue-dim); color: var(--ws-link);
+}
+.ws-opt-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.ws-opt-title { font-size: 13px; font-weight: 700; }
+.ws-opt-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+.ws-opt-chev { color: var(--text-muted); flex-shrink: 0; }
+
+/* Rename dialog, inside the sheet. */
+.ws-dialog-back {
+  position: absolute; inset: 0; z-index: 20;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.ws-dialog {
+  width: 100%; padding: 16px;
+  background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.3);
+}
+.ws-dialog-title { font-size: 14px; font-weight: 800; color: var(--text-primary); }
+.ws-dialog-sub { font-size: 11px; line-height: 1.45; color: var(--text-muted); margin: 3px 0 10px; }
+.ws-dialog .field { background: var(--bg-elevated); border-color: var(--border-default); }
+
+/* Add-wallet flow (onboarding create / import steps) over the sheet. */
+.ws-flow { position: fixed; inset: 0; z-index: 120; }

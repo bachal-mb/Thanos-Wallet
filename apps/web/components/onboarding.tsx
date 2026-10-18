@@ -1,9 +1,9 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { HDNodeWallet, Mnemonic, Wallet, getAddress, isHexString } from 'ethers';
 import {
   Wallet as WalletIcon, ChevronLeft, Eye, EyeOff, Copy, Check,
-  AlertTriangle, Lock,
+  AlertTriangle, Lock, X,
 } from 'lucide-react';
 import {
   createVault, openVault, openVaultWithKey,
@@ -11,8 +11,10 @@ import {
   cacheSessionKey, getSessionKey, clearSessionKey,
   hasLegacyPlaintext, migrateLegacyPlaintext,
   setSeedBackedUp,
+  openWallet, walletSourceOf, setWalletOrigin, addWallet, currentWalletId, getActiveAccountIndex,
+  FIRST_WALLET_ID, type StoredWallet, type WalletOrigin,
 } from '../lib/vault';
-import { serializeSource, deserializeSource, type WalletSource } from '../lib/wallet-source';
+import { serializeSource, type WalletSource } from '../lib/wallet-source';
 import { toLithoForm } from '../lib/address';
 import { initSigner, lockSigner } from '../lib/signer-client';
 import { startIdleLock, idleExpired, readAutoLockMinutes, copySecretToClipboard, passwordProblem } from '@thanos/sdk-core';
@@ -59,8 +61,42 @@ function validatePrivateKey(input: string): { privateKey: string; address: strin
   }
 }
 
-export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; onComplete: (source: WalletSource) => void }) {
-  const [step, setStep] = useState<Step>(hasVault ? 'unlock' : 'welcome');
+/** The first wallet's vault was just written: open it (w0 — the vault's
+ *  only wallet), then record how it came in and that the user holds its
+ *  secret. Selecting first puts both flags under the first wallet's keys. */
+function openFirstWallet(source: WalletSource, origin: WalletOrigin): void {
+  openWallet(serializeSource(source));
+  setWalletOrigin(FIRST_WALLET_ID, source.kind === 'privateKey' ? 'imported' : origin);
+  setSeedBackedUp(true);
+}
+
+/** Add-wallet mode (the Wallets & accounts panel): the same create — with
+ *  the backup and verify steps — and import steps, adding a wallet to the
+ *  unlocked vault. No password step: it's sealed with the vault's own key
+ *  (lib/vault.ts addWallet), so the vault password stays. Same model as the
+ *  phone app's add-wallet mode. */
+export interface AddWalletMode {
+  start: 'create' | 'phrase' | 'privateKey';
+  /** The wallet was added and lib/vault.ts has opened it. */
+  onAdded: (wallet: StoredWallet) => void;
+  onCancel: () => void;
+}
+
+export function OnboardingFlow({ hasVault, onComplete, addMode }: {
+  hasVault: boolean;
+  onComplete: (source: WalletSource) => void;
+  addMode?: AddWalletMode;
+}) {
+  const [step, setStep] = useState<Step>(
+    addMode ? (addMode.start === 'create' ? 'create-length' : addMode.start === 'phrase' ? 'import' : 'import-pk')
+    : hasVault ? 'unlock' : 'welcome',
+  );
+  /** Back out of the first step of add-wallet mode = close it. */
+  const backTo = (to: Step) => {
+    setFormErr('');
+    if (addMode && (to === 'welcome' || to === 'import-choose')) addMode.onCancel();
+    else setStep(to);
+  };
   const [seed, setSeed] = useState<string[]>([]);
   const [importInput, setImportInput] = useState('');
   const [pkInput,     setPkInput]     = useState('');
@@ -149,7 +185,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
       const vault = await createVault(serializeSource(source), password);
       saveVault(vault);
       // The user just passed the recovery-phrase verification step.
-      setSeedBackedUp(true);
+      openFirstWallet(source, 'created');
       // Session-cache the derived key so a refresh skips the password prompt.
       const opened = await openVault(vault, password);
       if (opened) cacheSessionKey(opened.key);
@@ -171,7 +207,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
       const vault = await createVault(serializeSource(source), password);
       saveVault(vault);
       // Imported — the user already holds this recovery phrase.
-      setSeedBackedUp(true);
+      openFirstWallet(source, 'imported');
       const opened = await openVault(vault, password);
       if (opened) cacheSessionKey(opened.key);
       onComplete(source);
@@ -192,7 +228,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
       const vault = await createVault(serializeSource(source), password);
       saveVault(vault);
       // Imported via private key — nothing to back up beyond what the user holds.
-      setSeedBackedUp(true);
+      openFirstWallet(source, 'imported');
       const opened = await openVault(vault, password);
       if (opened) cacheSessionKey(opened.key);
       onComplete(source);
@@ -220,11 +256,54 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
         return;
       }
       cacheSessionKey(opened.key);
-      onComplete(deserializeSource(opened.mnemonic));
+      // One wallet or several: open the remembered one (lib/vault.ts).
+      onComplete(walletSourceOf(openWallet(opened.mnemonic).secret));
     } finally {
       setBusy(false);
     }
   };
+
+  /* Add-wallet mode: the verified new phrase or the import goes into the
+     unlocked vault next to the other wallets, and is opened. */
+  const addingRef = useRef(false); // a double click lands before `busy` re-renders
+  const finishAdd = async (kind: AddWalletMode['start']) => {
+    if (!addMode || busy || addingRef.current) return;
+    let secret: string;
+    if (kind === 'create') {
+      secret = seed.join(' ');
+    } else if (kind === 'phrase') {
+      const words = importInput.trim().toLowerCase().split(/\s+/);
+      if (![12, 15, 18, 21, 24].includes(words.length)) { setFormErr('Phrase must be 12, 15, 18, 21 or 24 words'); return; }
+      if (!isValidMnemonic(words.join(' '))) { setFormErr('Invalid recovery phrase — check for typos'); return; }
+      secret = words.join(' ');
+    } else {
+      const pk = validatePrivateKey(pkInput);
+      if (!pk) { setFormErr('Invalid private key — must be 0x-prefixed 32-byte hex'); return; }
+      secret = pk.privateKey;
+    }
+    setFormErr('');
+    addingRef.current = true;
+    setBusy(true);
+    try {
+      const r = await addWallet(secret, undefined, kind === 'create' ? 'created' : 'imported');
+      if ('error' in r) { setFormErr(r.error); return; }
+      addMode.onAdded(r.wallet);
+    } catch {
+      setFormErr('Something went wrong — nothing was changed.');
+    } finally {
+      addingRef.current = false;
+      setBusy(false);
+    }
+  };
+  /** "Continue" from the verify / import steps: the password step, or — when
+   *  adding a wallet — straight into the vault. */
+  const continueFrom = (kind: AddWalletMode['start']) => {
+    if (addMode) { void finishAdd(kind); return; }
+    setStep(kind === 'create' ? 'create-pwd' : kind === 'phrase' ? 'import-pwd' : 'import-pk-pwd');
+  };
+  const continueLabel = addMode ? (busy ? 'Adding…' : 'Add wallet') : 'Continue';
+  /** Add-wallet mode shows why the add failed on the step itself. */
+  const addErr = addMode && formErr ? <div className="onboard-err">{formErr}</div> : null;
 
   const resetWallet = () => {
     // Two-step inline confirm — the first click arms the action and the
@@ -259,6 +338,14 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
   return (
     <div className="onboard-wrap">
       <div className="onboard-card">
+        {addMode && (
+          <div className="onboard-add-head">
+            <span className="onboard-add-eyebrow">Add wallet</span>
+            <button type="button" className="onboard-add-close" onClick={addMode.onCancel} aria-label="Close — don’t add a wallet">
+              <X size={18}/>
+            </button>
+          </div>
+        )}
         {step !== 'welcome' && (
           <div className="onboard-logo">
             <img src="/images/Thanos_Logo_Transparent.png" alt="Thanos"/>
@@ -336,7 +423,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
             style={{ fontFamily: 'Geist Mono, monospace', fontSize: 12 }}
             placeholder="0xabc123…"
             value={pkInput}
-            onChange={e => setPkInput(e.target.value)}
+            onChange={e => { setPkInput(e.target.value); setFormErr(''); }}
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
@@ -356,15 +443,16 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
               </div>
             </div>
           )}
+          {addErr}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-            <button className="btn-outline" style={{ flex: 1 }} onClick={() => setStep('import-choose')}>Back</button>
+            <button className="btn-outline" style={{ flex: 1 }} onClick={() => backTo('import-choose')}>Back</button>
             <button
               className="btn-primary"
               style={{ flex: 1 }}
-              disabled={!validatePrivateKey(pkInput)}
-              onClick={() => setStep('import-pk-pwd')}
+              disabled={!validatePrivateKey(pkInput) || busy}
+              onClick={() => continueFrom('privateKey')}
             >
-              Continue
+              {continueLabel}
             </button>
           </div>
         </>}
@@ -384,7 +472,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
               <div className="phrase-len-sub">Advanced · 256-bit entropy</div>
             </button>
           </div>
-          <button className="btn-outline" style={{ width: '100%', marginTop: 14 }} onClick={() => setStep('welcome')}>Back</button>
+          <button className="btn-outline" style={{ width: '100%', marginTop: 14 }} onClick={() => backTo('welcome')}>Back</button>
         </>}
 
         {step === 'create-warn' && <>
@@ -482,9 +570,10 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
             ))}
           </div>
           {orderMismatch && <div className="onboard-err">Order doesn't match. Tap slots to undo and try again.</div>}
+          {addErr}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <button className="btn-outline" style={{ flex: 1 }} onClick={() => setStep('create-show')}>Back</button>
-            <button className="btn-primary" style={{ flex: 1 }} disabled={!allConfirmed} onClick={() => setStep('create-pwd')}>Continue</button>
+            <button className="btn-primary" style={{ flex: 1 }} disabled={!allConfirmed || busy} onClick={() => continueFrom('create')}>{continueLabel}</button>
           </div>
         </>}
 
@@ -533,11 +622,12 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
         {step === 'import' && <>
           <h1 className="onboard-title">Import recovery phrase</h1>
           <p className="onboard-sub">Paste your 12, 15, 18, 21, or 24-word recovery phrase.</p>
-          <textarea className="field-input" style={{ height: 100, resize: 'none', fontFamily: 'Geist Mono, monospace', fontSize: 12 }} placeholder="word1 word2 word3 …" value={importInput} onChange={e => setImportInput(e.target.value)}/>
+          <textarea className="field-input" style={{ height: 100, resize: 'none', fontFamily: 'Geist Mono, monospace', fontSize: 12 }} placeholder="word1 word2 word3 …" value={importInput} onChange={e => { setImportInput(e.target.value); setFormErr(''); }}/>
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{importInput.trim().split(/\s+/).filter(Boolean).length} words</div>
+          {addErr}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-            <button className="btn-outline" style={{ flex: 1 }} onClick={() => setStep('import-choose')}>Back</button>
-            <button className="btn-primary" style={{ flex: 1 }} disabled={![12,15,18,21,24].includes(importInput.trim().split(/\s+/).filter(Boolean).length)} onClick={() => setStep('import-pwd')}>Continue</button>
+            <button className="btn-outline" style={{ flex: 1 }} onClick={() => backTo('import-choose')}>Back</button>
+            <button className="btn-primary" style={{ flex: 1 }} disabled={![12,15,18,21,24].includes(importInput.trim().split(/\s+/).filter(Boolean).length) || busy} onClick={() => continueFrom('phrase')}>{continueLabel}</button>
           </div>
         </>}
 
@@ -565,7 +655,7 @@ export function OnboardingFlow({ hasVault, onComplete }: { hasVault: boolean; on
           <div className="onboard-footer">
             <p className="footer-text">
               {confirmReset
-                ? 'This permanently deletes the wallet from this device. Restore needs your recovery phrase.'
+                ? 'This permanently deletes every wallet on this device. Restoring needs their recovery phrases (or keys).'
                 : "Can't login? You can erase your current wallet and set up a new one"}
             </p>
             <button
@@ -602,8 +692,12 @@ export function useWalletGate() {
   const [walletSeed,       setWalletSeed]       = useState<string[]>([]);
   const [walletPrivateKey, setWalletPrivateKey] = useState<string | undefined>(undefined);
   const [walletAddress,    setWalletAddress]    = useState<string>('');
+  /** The open wallet of the vault (lib/vault.ts) — set together with its
+   *  secret, so the two never disagree within a render. */
+  const [walletId,         setWalletId]         = useState<string>(FIRST_WALLET_ID);
 
   const applySource = (source: WalletSource) => {
+    setWalletId(currentWalletId());
     // Set the address synchronously for the UI.
     if (source.kind === 'mnemonic') {
       const words = source.mnemonic.split(' ');
@@ -624,11 +718,17 @@ export function useWalletGate() {
     // the secret on the main thread again. Failure is non-fatal — callers
     // that need the worker will surface their own error if it's unavailable.
     // Pass the active account index so the worker derives from the same
-    // HD path the AppShell uses to show the user's address.
-    void import('../lib/vault')
-      .then(v => initSigner(source, v.getActiveAccountIndex()))
+    // HD path the AppShell uses to show the user's address — read now, as
+    // it belongs to the wallet being opened.
+    const accountIdx = getActiveAccountIndex();
+    void Promise.resolve()
+      .then(() => initSigner(source, accountIdx))
       .catch(() => { /* worker may be unsupported (SSR / old browser) */ });
   };
+
+  /** Show another wallet of the vault — lib/vault.ts has already opened it
+   *  (switchWallet / openAccount / addWallet / removeWallet). */
+  const showWallet = (wallet: StoredWallet) => applySource(walletSourceOf(wallet.secret));
 
   useEffect(() => {
     (async () => {
@@ -658,7 +758,7 @@ export function useWalletGate() {
       }
       const plaintext = await openVaultWithKey(vault, key);
       if (plaintext) {
-        applySource(deserializeSource(plaintext));
+        applySource(walletSourceOf(openWallet(plaintext).secret));
         setUnlocked(true);
       } else {
         // Stale / mismatched session key — wipe it so the unlock screen shows.
@@ -701,5 +801,5 @@ export function useWalletGate() {
   };
   const evmAddress = walletAddress || '0x0000…0000';
 
-  return { unlocked, hasVault, walletSeed, walletPrivateKey, evmAddress, lock, onComplete };
+  return { unlocked, hasVault, walletSeed, walletPrivateKey, evmAddress, walletId, lock, onComplete, showWallet };
 }

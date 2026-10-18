@@ -91,6 +91,7 @@ import {
 import {
   toAgentConfig, diffAgentConfig, validateAgentUpdate, QUANTT_TIMEFRAMES, type QuanttAgentConfig,
   agentFundingBlock, agentWalletNetwork, withdrawalResumable, QUANTT_CHAIN_LABELS as QUANTT_FUNDING_LABELS,
+  QUANTT_LAX_CHAINS,
 } from './lib/quantt-agent-config';
 import {
   createVault, openVault, openVaultWithKey,
@@ -99,6 +100,9 @@ import {
   hasLegacyPlaintext, migrateLegacyPlaintext,
   isHeavyLegacyKdf, upgradeVaultKdf,
   isSeedBackedUp, setSeedBackedUp,
+  openWallet, listWallets, addWallet, switchWallet, renameWallet, removeWallet, readWalletSecret,
+  openAccount, addAccountToWallet,
+  MAX_WALLETS, MAX_WALLET_NAME_LEN, type WalletInfo,
 } from './lib/vault';
 import {
   getBiometricCapability, biometricLabel,
@@ -117,6 +121,8 @@ import {
   getVisibleAccountIndices, hideAccount,
   getCustomAccountName,
   MAX_ACCOUNTS, MAX_ACCOUNT_NAME_LEN,
+  FIRST_WALLET_ID, currentWalletId, readWalletAccounts, getWalletAddresses, setWalletAddresses,
+  getWalletOrigin, setWalletOrigin, type WalletAccounts,
 } from './lib/accounts';
 import { discoverFundedAccountCount, deriveAccountAddresses } from './lib/account-discovery';
 import {
@@ -135,6 +141,7 @@ initSentry();
 import { QrScannerModal } from './components/QrScannerModal';
 import { WalletConnectModal, WalletConnectRequestHost } from './components/WalletConnect';
 import { tokenIconSource, networkIconSource, chainBadgeSource, tokenIconPresentation } from './lib/token-icons';
+import { humanSendError } from './lib/send-errors';
 import {
   fetchChainHistory, historyEvmChainIds, lithoscanTxUrl, type HistoryAddresses, type HistoryResult, type HistoryRow,
 } from './lib/chain-history';
@@ -189,7 +196,7 @@ import {
   Users, Trash2, TrendingUp, Image as ImageIcon, BadgeCheck,
   Check, CreditCard, Sparkles, Pencil, MapPin, BookUser, X as XIcon,
   ChevronDown, ChevronUp, Star, History, Scan, Wallet as WalletIcon,
-  RefreshCw, Play, Pause, Square as SquareIcon, ListChecks, Code, ArrowLeftRight,
+  RefreshCw, Play, Pause, Square as SquareIcon, ListChecks, Code, ArrowLeftRight, Ellipsis,
 } from 'lucide-react-native';
 import { ECOSYSTEM_APPS, ECOSYSTEM_HUB, type EcosystemApp, looksLikeUrl, normalizeUrl } from './lib/ecosystem';
 import { discoverAppIcon } from './lib/token-icons';
@@ -206,12 +213,12 @@ import { isNotificationsEnabled, setNotificationsEnabled, registerPush, unregist
    from app.json's expo.version (embedded in every build): the hand-bumped
    string it replaced had stayed at 2.0.1 through 2.0.4, so an up-to-date app
    would have been told to update. The fallback is only for a missing config. */
-const APP_VERSION = `thanos-v${Constants.expoConfig?.version ?? '2.0.11'}`;
+const APP_VERSION = `thanos-v${Constants.expoConfig?.version ?? '2.0.13'}`;
 
 /* EXCHANGE_ENABLED gates the whole Swap surface (Home quick action, token
    detail Swap button, the Swap screen, the Activity "Swap" filter). Off on
    iOS: same-chain swaps and cross-chain routing both run on MultX, which
-   isn't live on Lithosphere Mainnet yet, and App Review rejects a feature
+   isn't live on Lithosphere yet, and App Review rejects a feature
    that can't complete (client 2026-10-08: "remove only swap" for iOS). It
    stays on Android, where the screen explains it's unavailable. Within
    Swap, only the Bridge tab is dev-build only (see SWAP_MODE_TABS) — it
@@ -300,7 +307,7 @@ const ToggleCtx  = createContext<() => void>(() => {});
    root shell so any screen (Settings card, account sheet) can trigger it. */
 const RenameAcctCtx = createContext<(idx: number) => void>(() => {});
 /** The user's own accounts (visible HD indices) — Send lists them as one-tap recipients. */
-interface OwnAccount { idx: number; name: string; address: string }
+interface OwnAccount { idx: number; name: string; address: string; hue: number }
 const OwnAccountsCtx = createContext<OwnAccount[]>([]);
 /* Display currency — root-held so a change re-renders the whole tree
    (every formatUsd call picks up the new rate), same pattern as theme. */
@@ -439,6 +446,143 @@ function useWalletAddr(): string { return useContext(WalletAddrCtx); }
 const WalletSeedCtx = createContext<string[]>([]);
 function useWalletSeed(): string[] { return useContext(WalletSeedCtx); }
 
+/* The wallets in the vault (lib/vault.ts) — provided by App so Settings can
+   remove the open wallet (or, for the last one, keep the full delete flow)
+   and open the wallet switcher. */
+interface WalletsApi {
+  wallets: WalletInfo[];
+  activeId: string;
+  /** Remove a wallet after the funds / backup confirmations. Not for the last one. */
+  remove: (id: string) => void;
+  /** Open the account sheet (every wallet with its accounts). */
+  openSwitcher: () => void;
+  /** Bumped when the sheet asks Settings to run the full delete flow (its
+   *  last wallet's "Remove"); takeFullDelete() consumes that request. */
+  fullDeleteTick: number;
+  takeFullDelete: () => boolean;
+}
+const WalletsCtx = createContext<WalletsApi>({
+  wallets: [], activeId: FIRST_WALLET_ID, remove: () => {}, openSwitcher: () => {},
+  fullDeleteTick: 0, takeFullDelete: () => false,
+});
+function useWallets(): WalletsApi { return useContext(WalletsCtx); }
+
+/* ─── Wallet & account icons ─────────────────────────────────────────────
+   Every wallet and account gets its own colour (client 2026-10-17, Phantom /
+   Trust Wallet reference) in place of plain numbered squares. Saturated
+   two-stop gradients that carry a white glyph at ≥3.7:1 and stand out from
+   both theme backgrounds at ≥3.5:1. A wallet's colour comes from its id
+   (the first wallet keeps Thanos blue, and two of the user's wallets never
+   share one); an account's from its wallet's colour + its HD index, so one
+   wallet's accounts are all different and an account keeps its colour for
+   good. Neighbouring slots are deliberately far apart in hue. */
+const IDENTITY_PALETTE: ReadonlyArray<readonly [string, string]> = [
+  ['#4f86f7', '#2a5bd7'], // blue
+  ['#f0782a', '#c4480f'], // orange
+  ['#12a37a', '#08745a'], // emerald
+  ['#e0509b', '#b0256f'], // pink
+  ['#9a6cf6', '#6d3fe0'], // violet
+  ['#c99312', '#94640a'], // gold
+  ['#1597b8', '#0b6a8a'], // cyan
+  ['#ec4a62', '#b81d3c'], // rose
+  ['#6b6ef2', '#4338ca'], // indigo
+  ['#139c8d', '#0b6e66'], // teal
+];
+
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+
+/** Palette slot per wallet id, in vault order: from the id, moved on to the
+ *  next free slot if an earlier wallet already has it. */
+function walletHues(ids: string[]): Record<string, number> {
+  const n = IDENTITY_PALETTE.length;
+  const out: Record<string, number> = {};
+  const used = new Set<number>();
+  for (const id of ids) {
+    let h = id === FIRST_WALLET_ID ? 0 : fnv1a(id) % n;
+    for (let k = 0; k < n && used.has(h); k++) h = (h + 1) % n;
+    used.add(h);
+    out[id] = h;
+  }
+  return out;
+}
+const accountHue = (walletHue: number, idx: number) => (walletHue + idx) % IDENTITY_PALETTE.length;
+
+/** "Account 3" → "A3", "Trading bot" → "TB", "Savings" → "S". */
+function accountInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  const pick = (w: string) => (/^\d+$/.test(w) ? w : w[0]);
+  return words.length === 1 ? pick(words[0]).toUpperCase().slice(0, 2) : (pick(words[0]) + pick(words[1])).toUpperCase().slice(0, 3);
+}
+
+/* Account-sheet sections (client 2026-10-17 — wallets, imported wallets and
+   accounts kept apart, as in MetaMask / Trust Wallet / Phantom): wallets
+   created in Thanos, then imported recovery phrases, then imported private
+   keys. A phrase wallet from before the origin was recorded (an existing
+   install's first wallet) can't be placed, so it sits under "Recovery phrase". */
+const WALLET_GROUPS = [
+  { key: 'created',  title: 'Created in Thanos' },
+  { key: 'phrase',   title: 'Recovery phrase' },
+  { key: 'imported', title: 'Imported · recovery phrase' },
+  { key: 'key',      title: 'Imported · private key' },
+] as const;
+type WalletGroupKey = (typeof WALLET_GROUPS)[number]['key'];
+function walletGroupOf(w: WalletInfo): WalletGroupKey {
+  return w.kind === 'key' ? 'key' : (getWalletOrigin(w.id) ?? 'phrase');
+}
+/** The wallet's type / origin label. */
+function walletOriginLabel(w: WalletInfo): string {
+  return { created: 'Created', phrase: 'Recovery phrase', imported: 'Imported phrase', key: 'Private key' }[walletGroupOf(w)];
+}
+/** Badge colours per section — text ≥5:1 on its tint in both themes. */
+function originBadge(group: WalletGroupKey, dark: boolean): { bg: string; fg: string } {
+  const c = {
+    created:  { rgb: '59,122,247',  d: '#7ea6fa', l: '#1d4fc4' },
+    phrase:   { rgb: '133,133,154', d: '#c4c4d2', l: '#4b4b57' },
+    imported: { rgb: '139,125,247', d: '#b9aef9', l: '#5b48d6' },
+    key:      { rgb: '245,158,11',  d: '#fbbf24', l: '#9a4a06' },
+  }[group];
+  return { bg: `rgba(${c.rgb},${dark ? 0.16 : 0.12})`, fg: dark ? c.d : c.l };
+}
+
+/** A wallet (rounded square, wallet / key glyph) or account (circle,
+ *  initials) icon in its palette colour. */
+function IdentityIcon({ hue, size = 38, wallet, label }: {
+  hue: number; size?: number;
+  /** Wallet icon: 'phrase' or 'key' wallet glyph. Omit for an account. */
+  wallet?: WalletInfo['kind'];
+  /** Account initials (see accountInitials). */
+  label?: string;
+}) {
+  const gid = useObUid('idIcon');
+  const [from, to] = IDENTITY_PALETTE[((hue % IDENTITY_PALETTE.length) + IDENTITY_PALETTE.length) % IDENTITY_PALETTE.length];
+  const r = wallet ? Math.round(size * 0.3) : size / 2;
+  const glyph = Math.round(size * 0.46);
+  const text = label ?? '';
+  return (
+    <View style={{ width: size, height: size, borderRadius: r, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
+      <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
+        <Defs>
+          <SvgGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor={from}/>
+            <Stop offset="1" stopColor={to}/>
+          </SvgGradient>
+        </Defs>
+        <Rect x={0} y={0} width={size} height={size} rx={r} fill={`url(#${gid})`}/>
+      </Svg>
+      {wallet === 'key'
+        ? <Key size={glyph} color="#fff" strokeWidth={2.3}/>
+        : wallet
+          ? <WalletIcon size={glyph} color="#fff" strokeWidth={2.3}/>
+          : <Text style={{ color: '#fff', fontWeight: '800', fontSize: Math.round(size * (text.length > 2 ? 0.3 : 0.36)), letterSpacing: -0.3 }} numberOfLines={1}>{text}</Text>}
+    </View>
+  );
+}
+
 /* In-app browser — Discover opens dApps inside a WebView overlay rather
    than the OS browser (SafePal-style). App provides openBrowser; any
    screen can call it. */
@@ -505,6 +649,18 @@ interface DisplayAsset {
   /** LEP100 contract address; absent for the native LITHO asset. */
   tokenAddress?: string;
   native: boolean;
+  /** Found by token discovery (lib/discovered-assets.ts), not in the
+   *  wallet's token list. */
+  discovered?: boolean;
+  /** Discovered, unpriced and not listed: hidden until the user shows them. */
+  lessKnown?: boolean;
+  /** Discovered EVM token whose balance and decimals its chain confirmed —
+   *  only these are offered in Send. */
+  verified?: boolean;
+  /** A discovered Solana / Cosmos token (chainId 0, like their coins). */
+  chain?: 'solana' | 'cosmos';
+  /** Explorer logo, for tokens the app has no icon for. */
+  logo?: string;
 }
 interface PortfolioState {
   assets: DisplayAsset[]; totalUsd: number; loading: boolean; offline: boolean;
@@ -573,6 +729,50 @@ function reportIncoming(address: string, reads: WatchedBalance[]): void {
       void notifyIfEnabled('Funds received', `You received ${amount} ${rx.sym} on ${rx.networkName}.`);
     }
   }).catch(() => { /* best-effort */ });
+}
+
+type HeldToken = import('./lib/discovered-assets').HeldToken;
+
+/** The wallet's own EVM tokens, built in and user-added, with symbols —
+ *  discovery leaves these to the list and treats their symbol on another
+ *  contract as a look-alike. */
+async function listedEvmTokens(): Promise<Array<{ chainId: number; address: string; symbol: string }>> {
+  try {
+    const [ext, custom] = await Promise.all([import('./lib/evm-external'), import('./lib/custom-assets')]);
+    return [...ext.EXT_EVM_TOKENS, ...custom.customTokens()].map((t) => ({ chainId: t.chainId, address: t.address, symbol: t.symbol }));
+  } catch {
+    return [];
+  }
+}
+
+/** Display rows for discovered tokens. A token in the wallet's list keeps
+ *  the list's own row (read from its chain on every refresh). Priced by the
+ *  explorer's market price, or — Solana USDC / USDT — like the listed
+ *  stablecoins; anything else stays unpriced: a symbol's price is never lent
+ *  to another contract (a look-alike LAX mustn't be worth $1). */
+function heldTokenRows(tokens: HeldToken[], prices: Record<string, number>, listed: Array<{ chainId: number; address: string }>): DisplayAsset[] {
+  const isListed = new Set(listed.map((t) => `${t.chainId}:${t.address.toLowerCase()}`));
+  const rows: DisplayAsset[] = [];
+  for (const t of tokens) {
+    if (t.chain === 'evm' && (t.known || isListed.has(`${t.chainId}:${t.address.toLowerCase()}`))) continue;
+    const bal = parseFloat(t.balance) || 0;
+    if (!(bal > 0)) continue;
+    const stable = t.symbol === 'USDT' || t.symbol === 'USDC';
+    const price = t.priced && t.priceUsd ? t.priceUsd : t.known ? (prices[t.symbol] ?? (stable ? 1 : 0)) : 0;
+    // A Solana / IBC token without a name goes by its id ("47vY…hL49").
+    const label = t.symbol.includes('…') ? t.name : t.symbol;
+    rows.push({
+      sym: t.symbol, name: `${label} · ${t.networkName}`, chainId: t.chainId ?? 0,
+      balance: bal, balanceText: formatAmount(bal), decimals: t.decimals,
+      priceUsd: price, usdValue: bal * price, color: assetColor(t.symbol),
+      tokenAddress: t.address, native: false,
+      discovered: true, lessKnown: !t.wellKnown,
+      ...(t.verified ? { verified: true } : {}),
+      ...(t.chain !== 'evm' ? { chain: t.chain } : {}),
+      ...(t.logo ? { logo: t.logo } : {}),
+    });
+  }
+  return rows;
 }
 
 function usePortfolio(address: string, seed?: string[]): PortfolioState {
@@ -781,21 +981,67 @@ function usePortfolio(address: string, seed?: string[]): PortfolioState {
     return () => { cancelled = true; };
   }, [address, nonce, seedKey]);
 
+  // Every token the addresses hold beyond the wallet's list (client
+  // 2026-10-17: "Show all assets on address" — LAX sent to the wallet didn't
+  // show). Its own effect, so balances never wait on it: the saved list
+  // paints first, then — once the screen has settled — the explorers are
+  // read, at most every 5 minutes per address (lib/discovered-assets.ts).
+  // Kept with the address it belongs to: another account's tokens never
+  // show under this one.
+  const [found, setFound] = useState<{ address: string; rows: DisplayAsset[] }>({ address: '', rows: [] });
+  // A private-key wallet has no Solana / Cosmos address.
+  const phrase = seed && seed.length > 0 && !isPrivateKeyWallet(seed) ? seedKey : '';
+  useEffect(() => {
+    if (!address || /^0x0{40}$/i.test(address)) return;
+    let cancelled = false;
+    void (async () => {
+      const [lib, prices, listed] = await Promise.all([
+        import('./lib/discovered-assets'),
+        fetchEcosystemPrices().catch(() => ({} as Record<string, number>)),
+        listedEvmTokens(),
+      ]);
+      const paint = (tokens: HeldToken[]) => {
+        if (!cancelled) setFound({ address, rows: heldTokenRows(tokens, prices, listed) });
+      };
+      paint(await lib.savedHeldTokens(address));
+      await new Promise<void>((resolve) => { InteractionManager.runAfterInteractions(() => resolve()); });
+      if (cancelled) return;
+      const native: HistoryAddresses = phrase ? await nativeHistoryAddrs(address, phrase).catch(() => ({})) : {};
+      if (cancelled) return;
+      paint(await lib.heldTokens({ evm: address, solana: native.solana, cosmos: native.cosmos }, listed));
+    })().catch(() => { /* keeps what's shown */ });
+    return () => { cancelled = true; };
+  }, [address, nonce, phrase]);
+
   // Lithosphere Mainnet (chainId 9005) always leads, regardless of balance —
   // it's the Web4 home chain, client requirement 2026-08-27. Below that:
   // funded assets first (largest USD on top); zero-balance supported-network
   // rows trail in their insertion order — "what I own" above "what I could hold".
-  const displayAssets = useMemo(() => [...assets].sort((a, b) => {
-    const rank = (x: typeof a) => x.chainId === 9005 ? -1 : x.balance > 0 ? 0 : 1;
-    const ar = rank(a), br = rank(b);
-    if (ar !== br) return ar - br;
-    return ar === 0 ? b.usdValue - a.usdValue : 0;
-  }), [assets]);
+  // Less-known discovered tokens come last, so "Show N hidden assets" opens
+  // them at the end of the list. A discovered token joins once per symbol
+  // and network, and a row the list already has (the network's coin, a
+  // listed token) wins — a tap or a Send pick by symbol + network can't land
+  // on another contract.
+  const displayAssets = useMemo(() => {
+    const taken = new Set(assets.map((a) => `${a.chainId}:${a.sym.toUpperCase()}`));
+    const extra = (found.address === address ? found.rows : []).filter((r) => {
+      const k = `${r.chainId}:${r.sym.toUpperCase()}`;
+      if (taken.has(k)) return false;
+      taken.add(k);
+      return true;
+    });
+    return [...assets, ...extra].sort((a, b) => {
+      const rank = (x: typeof a) => x.chainId === 9005 ? -1 : x.lessKnown ? 2 : x.balance > 0 ? 0 : 1;
+      const ar = rank(a), br = rank(b);
+      if (ar !== br) return ar - br;
+      return ar === 0 ? b.usdValue - a.usdValue : 0;
+    });
+  }, [assets, found, address]);
 
   // Total derived from the list itself — the old separately-tracked total
   // state drifted during phased loads (reset + increments); deriving makes
   // it impossible for the number and the rows to disagree.
-  const totalUsd = useMemo(() => assets.reduce((s, a) => s + a.usdValue, 0), [assets]);
+  const totalUsd = useMemo(() => displayAssets.reduce((s, a) => s + a.usdValue, 0), [displayAssets]);
 
   return { assets: displayAssets, totalUsd, loading, offline, hydrated, reload: () => setNonce((n) => n + 1) };
 }
@@ -814,24 +1060,9 @@ function relativeTime(iso?: string): string {
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 
-/** Map raw broadcast errors (ethers internals, RPC strings) to actionable
- *  copy. Users must never see internals like FallbackProvider's
- *  "no runners?!" (= every RPC endpoint was unreachable). */
-function humanSendError(e: unknown): string {
-  const raw  = (e as Error)?.message || '';
-  const code = String((e as { code?: unknown })?.code ?? '');
-  const s = `${code} ${raw}`.toLowerCase();
-  if (s.includes('no runners') || code === 'NETWORK_ERROR' || code === 'TIMEOUT'
-      || s.includes('failed to detect network') || s.includes('could not detect network')
-      || s.includes('network error') || s.includes('timeout') || s.includes('abort'))
-    return "Couldn't reach the network. Check your internet connection and try again — nothing left your wallet.";
-  if (code === 'INSUFFICIENT_FUNDS' || s.includes('insufficient funds'))
-    return 'Not enough balance to cover the amount plus the network fee.';
-  if (code === 'NONCE_EXPIRED' || code === 'REPLACEMENT_UNDERPRICED' || s.includes('nonce'))
-    return 'A previous transaction is still settling — wait a few seconds and try again.';
-  if (code === 'ACTION_REJECTED') return 'Transaction cancelled.';
-  return raw || 'Could not broadcast the transaction.';
-}
+/* Raw broadcast errors (ethers internals, RPC strings, "no runners?!") are
+   mapped to actionable copy by humanSendError — lib/send-errors.ts, a twin of
+   sdk-core utils/send-errors.ts. */
 
 /** Map an indexer activity type to a display label + direction. */
 function txDisplay(type: string): { label: string; positive: boolean } {
@@ -2131,6 +2362,34 @@ function UpdateAvailableBanner() {
   );
 }
 
+/** A discovered token's explorer logo (the app bundles icons for its listed
+ *  tokens only). */
+function heldTokenIcon(a: DisplayAsset): ImageSourcePropType | undefined {
+  return a.discovered && a.logo ? { uri: a.logo } : undefined;
+}
+
+/** "Show N hidden assets" / "Hide less-known assets" at the end of an asset
+ *  list: tokens the wallet holds that aren't in its list and have no market
+ *  price (lib/discovered-assets.ts). The choice is kept per wallet. */
+function LessKnownToggle({ count, shown, onPress }: { count: number; shown: boolean; onPress: () => void }) {
+  const C = useColors();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => [{
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+        paddingVertical: 13, paddingHorizontal: 14,
+      }, pressed && { opacity: 0.6 }]}
+    >
+      {shown ? <EyeOff size={15} color={C.blue}/> : <Eye size={15} color={C.blue}/>}
+      <Text style={{ color: C.blue, fontSize: 13, fontWeight: '700' }}>
+        {shown ? 'Hide less-known assets' : `Show ${count} hidden asset${count === 1 ? '' : 's'}`}
+      </Text>
+    </Pressable>
+  );
+}
+
 function HomeScreen({ navigate, onOpenToken }: { navigate: (s: Screen) => void; onOpenToken: (sym: string, chainId?: number) => void }) {
   const C = useColors();
   const styles = useStyles();
@@ -2141,15 +2400,19 @@ function HomeScreen({ navigate, onOpenToken }: { navigate: (s: Screen) => void; 
   // Networks/assets the user hid in Settings never reach this screen's list
   // or totals — see useHiddenAssets' header note for why Send/Receive/detail
   // navigation stay unaffected (this is a portfolio-VIEW preference only).
-  const { isVisible } = useHiddenAssets();
+  // Less-known tokens the wallet holds stay behind "Show N hidden assets"
+  // at the end of the list until this wallet shows them.
+  const { isVisible, isShown, showLessKnown, setShowLessKnown } = useHiddenAssets(addr);
   const assets = useMemo(() => allAssets.filter(isVisible), [allAssets, isVisible]);
+  const lessKnownCount = allAssets.filter((a) => a.lessKnown && isShown(a)).length;
   const totalUsd = assets.reduce((s, a) => s + a.usdValue, 0);
   const networks = new Set(assets.map((a) => a.chainId)).size;
   // Cold first load only: loading AND nothing cached/painted yet. If a snapshot
   // hydrated the view (or any assets are already present), show real data.
   const showSkeleton = loading && !hydrated && allAssets.length === 0;
   const [backedUp, setBackedUp] = useState<boolean | null>(null);
-  useEffect(() => { isSeedBackedUp().then(setBackedUp).catch(() => {}); }, []);
+  // Per wallet — re-read when another wallet is opened.
+  useEffect(() => { isSeedBackedUp().then(setBackedUp).catch(() => {}); }, [seed]);
   // Keep balances current while Home is open — every minute and on return to
   // the foreground — so funds received show (and notify, lib/incoming.ts)
   // without a pull-to-refresh.
@@ -2302,20 +2565,24 @@ function HomeScreen({ navigate, onOpenToken }: { navigate: (s: Screen) => void; 
             <Text style={[styles.rowSub, { padding: 16 }]}>No assets yet.</Text>
           )}
           {assets.map((a, i) => (
-            <Pressable key={`${a.sym}-${a.chainId}`} style={[styles.row, i < assets.length - 1 && styles.rowBorder]} onPress={() => onOpenToken(a.sym, a.chainId)}>
-              <Avatar symbol={a.sym} color={a.color} chainId={a.chainId} native={a.native} />
+            <Pressable key={assetKeyOf(a)} style={[styles.row, (i < assets.length - 1 || lessKnownCount > 0) && styles.rowBorder]} onPress={() => onOpenToken(a.sym, a.chainId)}>
+              <Avatar symbol={a.sym} color={a.color} chainId={a.chainId} native={a.native} icon={heldTokenIcon(a)}/>
               <View style={styles.rowMid}>
                 <Text style={styles.rowSymbol}>{a.name}</Text>
-                <Text style={styles.rowSub}>{a.priceUsd > 0 ? formatUsd(a.priceUsd) : '—'}</Text>
+                <Text style={styles.rowSub}>{a.priceUsd > 0 ? formatUsd(a.priceUsd) : a.lessKnown ? 'Less known' : '—'}</Text>
               </View>
               <View style={styles.rowRight}>
-                <Text style={styles.rowAmt}>{balanceHidden ? '••••' : formatUsd(a.usdValue)}</Text>
+                {/* A discovered token without a price shows its balance only. */}
+                <Text style={styles.rowAmt}>{balanceHidden ? '••••' : a.discovered && !(a.priceUsd > 0) ? '—' : formatUsd(a.usdValue)}</Text>
                 <Text style={styles.rowBal}>
                   {balanceHidden ? '••••' : a.sym === 'LITHO' ? <><LithoSym/>{a.balanceText}</> : `${a.balanceText} ${a.sym}`}
                 </Text>
               </View>
             </Pressable>
           ))}
+          {lessKnownCount > 0 && (
+            <LessKnownToggle count={lessKnownCount} shown={showLessKnown} onPress={() => setShowLessKnown(!showLessKnown)}/>
+          )}
         </View>
         )}
       </View>
@@ -2414,7 +2681,8 @@ const QUANTT_CHAIN_META: Record<QuanttChain, { chainId: number; native: string }
 };
 interface QuanttDepositAsset { sym: string; chain: QuanttChain; chainId: number }
 /** Assets a user can fund an agent with, on each chain it trades: the agent's
- *  quote asset first, then stablecoins and the chain's native coin — on
+ *  quote asset first, then LAX where it's deployed (Base, BNB Chain),
+ *  stablecoins and the chain's native coin — on
  *  Lithosphere Mainnet, which has no stablecoins, LAX and LITHO (LITHO also
  *  pays the agent's gas). Empty when no known chain is named: never guess. */
 function quanttDepositAssets(chains: string[], quoteAsset?: string): QuanttDepositAsset[] {
@@ -2422,7 +2690,8 @@ function quanttDepositAssets(chains: string[], quoteAsset?: string): QuanttDepos
   const out: QuanttDepositAsset[] = [];
   for (const chain of valid) {
     const { chainId, native } = QUANTT_CHAIN_META[chain];
-    const syms = chain === 'lithosphere' ? ['LAX', native] : [quoteAsset ?? 'USDC', 'USDC', 'USDT', native];
+    const syms = chain === 'lithosphere' ? ['LAX', native]
+      : [quoteAsset ?? 'USDC', ...(QUANTT_LAX_CHAINS.includes(chain) ? ['LAX'] : []), 'USDC', 'USDT', native];
     for (const sym of syms) if (!out.some((a) => a.sym === sym && a.chain === chain)) out.push({ sym, chain, chainId });
   }
   return out;
@@ -3913,11 +4182,16 @@ const HIDDEN_ASSETS_KEY   = 'thanos.hidden_assets.v1';
 const networkVisKey = (chainId: number, sym: string): string =>
   chainId === 0 ? `sym:${sym}` : `chain:${chainId}`;
 
+/** The network hide key of a portfolio row — a discovered Solana / Cosmos
+ *  token goes with its network's coin. */
+const networkKeyOfAsset = (a: { sym: string; chainId: number; chain?: 'solana' | 'cosmos' }): string =>
+  networkVisKey(a.chainId, a.chain === 'solana' ? 'SOL' : a.chain === 'cosmos' ? 'ATOM' : a.sym);
+
 /** Static catalog of every built-in network, for the "Manage networks"
  *  toggle list. The Makalu testnet (700777) isn't built in any more
  *  (2026-09-29) — it can be added back as a custom network. */
 const ALL_NETWORKS: Array<{ key: string; name: string; sub: string }> = [
-  { key: networkVisKey(9005, 'LITHO'),   name: 'Lithosphere',        sub: 'Mainnet · chain 9005' },
+  { key: networkVisKey(9005, 'LITHO'),   name: 'Lithosphere',        sub: 'Chain 9005' },
   { key: networkVisKey(0, 'BTC'),        name: 'Bitcoin',            sub: 'Native' },
   { key: networkVisKey(0, 'SOL'),        name: 'Solana',             sub: 'Native' },
   { key: networkVisKey(0, 'ATOM'),       name: 'Cosmos Hub',         sub: 'Native' },
@@ -3939,10 +4213,28 @@ const RETIRED_NETWORK_KEYS = [networkVisKey(700777, 'LITHO')];
 
 /** Loads + persists the two hidden-key sets and exposes toggle/filter
  *  helpers. Cheap (a couple of small JSON arrays) — fine to load fresh in
- *  every screen that needs it. */
-function useHiddenAssets() {
+ *  every screen that needs it. With the wallet's address it also knows
+ *  whether that wallet shows its less-known tokens (discovered, unpriced,
+ *  not listed — hidden by default; lib/discovered-assets.ts). */
+function useHiddenAssets(address?: string) {
   const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(new Set());
   const [hiddenAssets, setHiddenAssets]     = useState<Set<string>>(new Set());
+  const [lessKnownPref, setLessKnownPref]   = useState<{ address: string; show: boolean }>({ address: '', show: false });
+  useEffect(() => {
+    if (!address) return;
+    let live = true;
+    void import('./lib/discovered-assets')
+      .then((m) => m.getShowLessKnown(address))
+      .then((show) => { if (live) setLessKnownPref({ address, show }); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [address]);
+  const showLessKnown = !!address && lessKnownPref.address === address && lessKnownPref.show;
+  const setShowLessKnown = (show: boolean) => {
+    if (!address) return;
+    setLessKnownPref({ address, show });
+    void import('./lib/discovered-assets').then((m) => m.setShowLessKnown(address, show)).catch(() => {});
+  };
   useEffect(() => {
     (async () => {
       try {
@@ -3975,10 +4267,13 @@ function useHiddenAssets() {
       return next;
     });
   };
-  const isVisible = (a: { sym: string; chainId: number; tokenAddress?: string }): boolean =>
-    !hiddenNetworks.has(networkVisKey(a.chainId, a.sym)) && !hiddenAssets.has(assetKeyOf(a));
+  type Row = { sym: string; chainId: number; tokenAddress?: string; chain?: 'solana' | 'cosmos'; lessKnown?: boolean };
+  /** Not hidden by the user (network or asset), whether or not less known. */
+  const isShown = (a: Row): boolean =>
+    !hiddenNetworks.has(networkKeyOfAsset(a)) && !hiddenAssets.has(assetKeyOf(a));
+  const isVisible = (a: Row): boolean => isShown(a) && (!a.lessKnown || showLessKnown);
 
-  return { hiddenNetworks, hiddenAssets, toggleNetwork, toggleAsset, isVisible };
+  return { hiddenNetworks, hiddenAssets, toggleNetwork, toggleAsset, isShown, isVisible, showLessKnown, setShowLessKnown };
 }
 
 /** Display name per built-in chainId, for the Send screen's "Network" rows —
@@ -3987,7 +4282,7 @@ function useHiddenAssets() {
  *  module is dynamic-imported elsewhere in this file specifically to keep
  *  its heavier send-path deps out of the eager bundle. */
 const EXT_EVM_CHAIN_NAMES: Record<number, string> = {
-  9005: 'Lithosphere Mainnet', 1: 'Ethereum', 56: 'BNB Chain', 137: 'Polygon',
+  9005: 'Lithosphere', 1: 'Ethereum', 56: 'BNB Chain', 137: 'Polygon',
   8453: 'Base', 42161: 'Arbitrum', 59144: 'Linea', 10: 'Optimism', 43114: 'Avalanche',
 };
 /** Network name for the Send screen's FROM coin — the network the send is
@@ -4178,9 +4473,12 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
   // BTC/SOL/ATOM rows (chainId 0, all-networks display); picking one here
   // would mis-route a send, so they're excluded — those chains have their
   // own pills with fixed native assets.
-  // Networks/assets the user hid in Settings stay out of the FROM picker too.
-  const { isVisible, hiddenNetworks } = useHiddenAssets();
-  const evmAssets = useMemo(() => assets.filter((a) => a.chainId !== 0 && isVisible(a)), [assets, isVisible]);
+  // Networks/assets the user hid in Settings stay out of the FROM picker too,
+  // and so do less-known tokens this wallet hasn't shown. A discovered token
+  // is offered only once its chain confirmed its balance and decimals (a
+  // wrong decimals value sends the wrong amount).
+  const { isVisible, hiddenNetworks } = useHiddenAssets(addr);
+  const evmAssets = useMemo(() => assets.filter((a) => a.chainId !== 0 && isVisible(a) && (!a.discovered || a.verified)), [assets, isVisible]);
   const coin =
     (selectedKey ? evmAssets.find((a) => assetKeyOf(a) === selectedKey) : undefined)
     // An exact (symbol + chain) match — several symbols repeat across chains
@@ -4259,6 +4557,30 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
     chain === 'evm'
       ? !!coin && !!evmNet && (amtNum > 0 || (hexBytes > 0 && amtNum === 0)) && hexOk && !overBalance && !!to && recipientOk && !sending && !simHasCritical
       : amtNum > 0 && !overBalance && !!to && recipientOk && !sending;
+  /** Why Review can't go ahead yet — the first thing to fix, in the order the
+   *  form reads. Shown as a pop-up when the button is tapped. */
+  const reviewProblem: string | null = (() => {
+    if (sending) return null;
+    if (chain === 'evm' && (!coin || !evmNet)) return 'Pick the asset and network to send from.';
+    if (!(amtNum > 0) && !(chain === 'evm' && hexBytes > 0)) return 'Enter the amount to send.';
+    if (overBalance) {
+      return `That’s more than your balance of ${fromBal ? formatAmount(fromBal.balance) : ''} ${reviewSym}. `
+        + 'Leave a little for the network fee.';
+    }
+    if (chain === 'evm' && !hexOk) return 'The data field must be hex, starting with 0x.';
+    if (!to.trim()) return "Enter, paste or scan the recipient's address.";
+    if (!recipientOk) {
+      if (chain !== 'evm') return `That isn’t a valid ${CHAIN_META[chain].label} address.`;
+      return coin?.chainId === 9005
+        ? 'That isn’t a Lithosphere address. Use a litho1… address, a 0x… address or a name.litho.'
+        : `That isn’t a valid ${reviewNetwork} address — it should start with 0x.`;
+    }
+    if (simHasCritical) {
+      return simReport?.issues.find((i) => i.level === 'critical')?.message
+        ?? 'This transfer was flagged as unsafe, so it’s blocked.';
+    }
+    return null;
+  })();
 
   /* Debounced pre-send simulation. Only EVM chains for now — Bitcoin +
      Solana have their own checks elsewhere. */
@@ -4563,9 +4885,7 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
                   style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth, borderTopColor: C.borderSubtle }, pressed && { opacity: 0.6 }]}
                   accessibilityLabel={`Send to ${a.name}`}
                 >
-                  <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: C.blueDim, alignItems: 'center', justifyContent: 'center' }}>
-                    <WalletIcon size={18} color={C.blue}/>
-                  </View>
+                  <IdentityIcon hue={a.hue} size={36} label={accountInitials(a.name)}/>
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: C.textPrimary, fontSize: 15, fontWeight: '600' }}>{a.name}</Text>
                     <Text style={{ color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 2 }}>{shown.slice(0, shown.startsWith('litho1') ? 12 : 8)}…{shown.slice(-6)}</Text>
@@ -4623,8 +4943,16 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
         title="Scan recipient address"
         onClose={() => setScanOpen(false)}
         onResult={(data) => {
-          setTo(parseScannedAddress(data));
           setScanOpen(false);
+          // Say so when the QR isn't an address, rather than filling the
+          // field with whatever text it held (client 2026-10-16).
+          const parsed = parseScannedAddress(data);
+          const looksLikeAddress = /^(0x[0-9a-fA-F]{40}|litho1[0-9a-z]{20,}|cosmos1[0-9a-z]{20,}|bc1[0-9a-z]{20,}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|[1-9A-HJ-NP-Za-km-z]{32,44}|[a-z0-9-]+\.litho)$/i.test(parsed);
+          if (!looksLikeAddress) {
+            Alert.alert('Not a wallet address', "That QR code doesn't contain a wallet address. Scan the recipient's Receive QR code.");
+            return;
+          }
+          setTo(parsed);
         }}
       />
 
@@ -4792,8 +5120,16 @@ function SendScreen({ goBack, initialChain, initialSym, initialChainId, initialT
 
       <Pressable
         style={[styles.btnPrimary, !canReview && { opacity: 0.4 }]}
-        disabled={!canReview}
-        onPress={onReview}
+        disabled={sending}
+        onPress={() => {
+          // Not ready: say why, instead of a button that silently does
+          // nothing (client 2026-10-16).
+          if (!canReview) {
+            if (reviewProblem) Alert.alert('Can’t send yet', reviewProblem);
+            return;
+          }
+          onReview();
+        }}
       >
         <Text style={styles.btnPrimaryText}>
           {sending ? 'Sending…' : simHasCritical ? 'Issue detected — blocked' : 'Review send'}
@@ -5081,7 +5417,7 @@ function ReceiveScreen({ goBack, initialSym, initialChainId }: { goBack: () => v
         <View style={[styles.networkSelector, { marginTop: 10 }]}>
           <View style={styles.netDot}/>
           <Text style={styles.networkSelectorText}>
-            {chain === 'lithosphere-mainnet' ? 'Lithosphere · Mainnet'
+            {chain === 'lithosphere-mainnet' ? 'Lithosphere'
              : chain === 'bitcoin'   ? 'Bitcoin · mainnet'
              : chain === 'solana'    ? 'Solana · mainnet-beta'
              : chain === 'cosmos'    ? 'Cosmos Hub · cosmoshub-4'
@@ -6067,7 +6403,7 @@ function SwapScreen({ goBack, initialFrom }: { goBack: () => void; initialFrom?:
       <View style={{ paddingHorizontal: 16, paddingVertical: 24, alignItems: 'center', gap: 6 }}>
         <Text style={{ color: C.textPrimary, fontSize: 15, fontWeight: '700' }}>Swap is coming soon</Text>
         <Text style={{ color: C.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center' }}>
-          Swaps will open on Lithosphere Mainnet. Until then, send and receive work as usual.
+          Swaps will open on Lithosphere. Until then, send and receive work as usual.
         </Text>
       </View>
       ) : (
@@ -6180,7 +6516,7 @@ function EarnScreen({ goBack }: { goBack: () => void }) {
         </View>
         <Text style={{ fontSize: 16, fontWeight: '700', color: C.textPrimary, textAlign: 'center' }}>Staking opens with the protocol rollout</Text>
         <Text style={{ fontSize: 13, color: C.textMuted, textAlign: 'center', lineHeight: 20 }}>
-          Lithosphere validator staking, LITHO/LitBTC LP, and the LAX stable-yield vault will appear here as soon as the staking contract is deployed on Lithosphere Mainnet. Your active positions will show up automatically.
+          Lithosphere validator staking, LITHO/LitBTC LP, and the LAX stable-yield vault will appear here as soon as the staking contract is deployed on Lithosphere. Your active positions will show up automatically.
         </Text>
       </View>
     </ScrollView>
@@ -6412,7 +6748,12 @@ function SettingsScreen() {
      recoverable, without one it is permanent loss, and the user deserves to be
      told which situation they're in BEFORE the destructive tap. */
   const resetWallet = useResetWallet();
+  const walletsApi = useWallets();
+  const openWalletName = walletsApi.wallets.find((w) => w.id === walletsApi.activeId)?.name ?? 'this wallet';
   const deleteWalletFlow = async () => {
+    // Several wallets: only the open one goes (App runs the funds / backup
+    // confirmations) and the others stay. The last one takes the full flow below.
+    if (walletsApi.wallets.length > 1) { walletsApi.remove(walletsApi.activeId); return; }
     let backedUp = false;
     try { backedUp = await isSeedBackedUp(); } catch { backedUp = false; }
     Alert.alert(
@@ -6443,6 +6784,10 @@ function SettingsScreen() {
       ],
     );
   };
+  // The account sheet's "Remove" on the last wallet lands here: run this flow.
+  useEffect(() => {
+    if (walletsApi.takeFullDelete()) void deleteWalletFlow();
+  }, [walletsApi.fullDeleteTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Modal flags for the settings actions.
   const [revealOpen, setRevealOpen]     = useState(false);
@@ -6725,6 +7070,13 @@ function SettingsScreen() {
         </View>
       </View>
 
+      <Section Icon={WalletIcon} title="Wallets" sub="Several recovery phrases or keys in one app" items={[
+        { label: 'Manage wallets',
+          desc: walletsApi.wallets.length > 1
+            ? `${walletsApi.wallets.length} wallets · open: ${openWalletName}`
+            : 'Add, import, switch, rename or remove wallets',
+          Icon: WalletIcon, onPress: walletsApi.openSwitcher },
+      ]}/>
       <Section Icon={Globe} title="General" sub="Display, language, and locale" items={[
         { label: 'Currency', desc: `Display prices in ${fiat.code}`, Icon: TrendingUp, onPress: pickCurrency },
         { label: 'Language', desc: `Interface language — ${language}`, Icon: Globe, onPress: pickLanguage },
@@ -6778,8 +7130,9 @@ function SettingsScreen() {
           phrase has actually been backed up, because that's the difference
           between "restorable" and "gone forever". */}
       <Section Icon={AlertTriangle} title="Danger zone" sub="Irreversible — read before you tap" items={[
-        { label: 'Delete wallet', desc: 'Erase this wallet from this device', Icon: AlertTriangle,
-          onPress: () => { void deleteWalletFlow(); } },
+        { label: 'Delete wallet',
+          desc: walletsApi.wallets.length > 1 ? `Remove “${openWalletName}” from this device` : 'Erase this wallet from this device',
+          Icon: AlertTriangle, onPress: () => { void deleteWalletFlow(); } },
       ]}/>
 
       <SectionHead Icon={isDark ? Moon : Sun} title="Appearance" sub="Theme and display"/>
@@ -6808,7 +7161,7 @@ function SettingsScreen() {
       />
 
       <RevealPhraseModal visible={revealOpen} onClose={() => setRevealOpen(false)} seed={seed} initialTab={revealTab}/>
-      <ChangePasswordModal visible={changePwdOpen} onClose={() => setChangePwdOpen(false)} seed={seed}/>
+      <ChangePasswordModal visible={changePwdOpen} onClose={() => setChangePwdOpen(false)}/>
       <AutoLockModal
         visible={autoLockOpen}
         current={autoLockMin}
@@ -7390,7 +7743,7 @@ function RevealPhraseModal({ visible, onClose, seed, initialTab }: { visible: bo
   );
 }
 
-function ChangePasswordModal({ visible, onClose, seed }: { visible: boolean; onClose: () => void; seed: string[] }) {
+function ChangePasswordModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const C = useColors();
   const [cur, setCur] = useState('');
   const [next, setNext] = useState('');
@@ -7408,8 +7761,11 @@ function ChangePasswordModal({ visible, onClose, seed }: { visible: boolean; onC
     setBusy(true); setErr('');
     try {
       const vault = await loadVault();
-      if (!vault || !(await openVault(vault, cur))) { setErr('Current password is incorrect'); setBusy(false); return; }
-      await createVault(seed.join(' '), next); // re-encrypts + saves + caches key
+      const opened = vault ? await openVault(vault, cur) : null;
+      if (!opened) { setErr('Current password is incorrect'); setBusy(false); return; }
+      // The vault's whole plaintext — every wallet in it, not just the open
+      // one — moves to the new password.
+      await createVault(opened.mnemonic, next); // re-encrypts + saves + caches key
       Alert.alert('Password updated', 'Your wallet password has been changed.');
       onClose();
     } catch (e) {
@@ -8213,13 +8569,32 @@ function ObLegal() {
 type OnboardStep = 'welcome' | 'create-length' | 'create-warn' | 'create-show' | 'create-confirm'
                  | 'create-pwd' | 'import-choose' | 'import' | 'import-pk' | 'import-pwd' | 'unlock';
 
+/** Add-wallet mode: the same create (with the backup + verify steps) and
+ *  import steps, adding a wallet to the unlocked vault — no password step,
+ *  it's encrypted with the vault's own key (lib/vault.ts addWallet). */
+interface AddWalletMode {
+  start: 'create' | 'phrase' | 'privateKey';
+  /** The wallet was added and lib/vault.ts has opened it. */
+  onAdded: (secret: string) => void;
+  onCancel: () => void;
+}
+
 function OnboardingScreen({
   hasVault,
   onComplete,
-}: { hasVault: boolean; onComplete: (seed: string[]) => void }) {
+  addMode,
+}: { hasVault: boolean; onComplete: (seed: string[]) => void; addMode?: AddWalletMode }) {
   const C = useColors();
   const styles = useStyles();
-  const [step, setStep] = useState<OnboardStep>(hasVault ? 'unlock' : 'welcome');
+  const [step, setStep] = useState<OnboardStep>(
+    addMode ? (addMode.start === 'create' ? 'create-length' : addMode.start === 'phrase' ? 'import' : 'import-pk')
+    : hasVault ? 'unlock' : 'welcome',
+  );
+  // Back out of the first step of add-wallet mode = close it.
+  const backTo = (to: OnboardStep) => {
+    if (addMode && (to === 'welcome' || to === 'import-choose')) addMode.onCancel();
+    else setStep(to);
+  };
   const [seed, setSeed] = useState<string[]>([]);
   const [phraseLen, setPhraseLen] = useState<12 | 24>(12);
   // Engage Android FLAG_SECURE + iOS screenshot-detection on every step
@@ -8322,6 +8697,8 @@ function OnboardingScreen({
     setBusy(true);
     try {
       await createVault(seed.join(' '), password);
+      await openWallet(seed.join(' ')); // the new vault's one wallet; its settings load
+      setWalletOrigin(currentWalletId(), 'created'); // labels it in the account sheet
       await setSeedBackedUp(true); // create flow includes seed verification
       // createVault session-caches the key internally.
       await offerBiometricSetup();
@@ -8329,44 +8706,76 @@ function OnboardingScreen({
     } finally { setBusy(false); }
   };
 
-  const finishImport = async () => {
-    if (password !== password2 || pwProblem || busy) return;
-
+  /** The secret on the import steps, checked — null (after saying why, when
+   *  there's something to say) if it can't be used. */
+  const importSecret = (kind: 'phrase' | 'privateKey'): string | null => {
     // ── Private-key import ── stored as a single-element seed ['0x…']; the
     // vault holds the raw key, and deriveEvmAddress / lib/signer detect the
     // shape. EVM-only, single account.
-    if (importKind === 'privateKey') {
+    if (kind === 'privateKey') {
       const hex = pkInput.trim().toLowerCase().replace(/^0x/, '');
       if (!/^[0-9a-f]{64}$/.test(hex)) {
         Alert.alert('Invalid private key', 'Enter a 64-character hex private key (with or without the 0x prefix).');
-        return;
+        return null;
       }
       const key = `0x${hex}`;
-      try { new Wallet(key); } catch { Alert.alert('Invalid private key', 'That private key could not be parsed.'); return; }
-      setBusy(true);
-      try {
-        await createVault(key, password);
-        await setSeedBackedUp(true); // no phrase to back up — user holds the key
-        await offerBiometricSetup();
-        onComplete([key]);
-      } finally { setBusy(false); }
-      return;
+      try { new Wallet(key); } catch { Alert.alert('Invalid private key', 'That private key could not be parsed.'); return null; }
+      return key;
     }
-
     // ── Recovery-phrase import ──
     const words = importInput.trim().toLowerCase().split(/\s+/);
-    if (![12, 15, 18, 21, 24].includes(words.length)) return;
+    if (![12, 15, 18, 21, 24].includes(words.length)) {
+      Alert.alert('Incomplete phrase', `That’s ${words.filter(Boolean).length} words — a recovery phrase has 12, 15, 18, 21 or 24.`);
+      return null;
+    }
     if (!isValidMnemonic(words.join(' '))) {
       Alert.alert('Invalid phrase', "That recovery phrase isn't valid.");
-      return;
+      return null;
     }
+    return words.join(' ');
+  };
+
+  const finishImport = async () => {
+    if (password !== password2 || pwProblem || busy) return;
+    const secret = importSecret(importKind);
+    if (!secret) return;
     setBusy(true);
     try {
-      await createVault(words.join(' '), password);
-      await setSeedBackedUp(true); // imported — user already holds the phrase
+      await createVault(secret, password);
+      await openWallet(secret); // the new vault's one wallet; its settings load
+      setWalletOrigin(currentWalletId(), 'imported'); // labels it in the account sheet
+      // Imported — the user already holds the phrase (or, for a private key,
+      // there's no phrase to back up).
+      await setSeedBackedUp(true);
       await offerBiometricSetup();
-      onComplete(words);
+      onComplete(secret.split(' '));
     } finally { setBusy(false); }
+  };
+
+  /* Add-wallet mode: the verified new phrase or the import goes into the
+     unlocked vault next to the other wallets, and is opened. */
+  const addingRef = useRef(false); // a double tap lands before `busy` re-renders
+  const finishAdd = async (kind: 'create' | 'phrase' | 'privateKey') => {
+    if (!addMode || busy || addingRef.current) return;
+    const secret = kind === 'create' ? seed.join(' ') : importSecret(kind);
+    if (!secret) return;
+    addingRef.current = true;
+    setBusy(true);
+    try {
+      const r = await addWallet(secret, undefined, kind === 'create' ? 'created' : 'imported');
+      if ('error' in r) { Alert.alert('Couldn’t add the wallet', r.error); return; }
+      addMode.onAdded(r.wallet.secret);
+    } catch {
+      Alert.alert('Couldn’t add the wallet', 'Something went wrong — nothing was changed.');
+    } finally { addingRef.current = false; setBusy(false); }
+  };
+  /** "Continue" from the verify / import steps: the password step, or — when
+   *  adding a wallet — straight into the vault. */
+  const continueFrom = (kind: 'create' | 'phrase' | 'privateKey') => {
+    if (addMode) { void finishAdd(kind); return; }
+    if (kind === 'create') { setStep('create-pwd'); return; }
+    setImportKind(kind);
+    setStep('import-pwd');
   };
 
   const tryUnlock = async () => {
@@ -8396,7 +8805,8 @@ function OnboardingScreen({
         const mnemonic = opened.mnemonic, pwd = unlockPwd;
         InteractionManager.runAfterInteractions(() => { void upgradeVaultKdf(mnemonic, pwd); });
       }
-      finishUnlock(opened.mnemonic.split(' '));
+      // The vault may hold several wallets — open the one in use last time.
+      finishUnlock((await openWallet(opened.mnemonic)).secret.split(' '));
     } finally { setBusy(false); }
   };
 
@@ -8425,7 +8835,7 @@ function OnboardingScreen({
         return;
       }
       cacheSessionKey(key);
-      finishUnlock(mnemonic.split(' '));
+      finishUnlock((await openWallet(mnemonic)).secret.split(' '));
     } finally { clearTimeout(watchdog); setBioBusy(false); }
   };
 
@@ -8596,7 +9006,7 @@ function OnboardingScreen({
               <ChevronRight size={18} color={C.textMuted}/>
             </View>
           </Pressable>
-          <Pressable style={styles.btnOutline} onPress={() => setStep('welcome')}>
+          <Pressable style={styles.btnOutline} onPress={() => backTo('welcome')}>
             <Text style={styles.btnOutlineText}>Back</Text>
           </Pressable>
         </>}
@@ -8616,13 +9026,13 @@ function OnboardingScreen({
             onChangeText={setPkInput}
           />
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
-            <Btn style={[styles.btnOutline, { flex: 1, marginTop: 0 }]} onPress={() => setStep('import-choose')} ripple="rgba(59,122,247,0.18)">
+            <Btn style={[styles.btnOutline, { flex: 1, marginTop: 0 }]} onPress={() => backTo('import-choose')} ripple="rgba(59,122,247,0.18)">
               <Text style={styles.btnOutlineText}>Back</Text>
             </Btn>
             <Btn
               style={[styles.btnPrimary, { flex: 1, marginTop: 0, opacity: /^(0x)?[0-9a-fA-F]{64}$/.test(pkInput.trim()) ? 1 : 0.45 }]}
               disabled={!/^(0x)?[0-9a-fA-F]{64}$/.test(pkInput.trim())}
-              onPress={() => { setImportKind('privateKey'); setStep('import-pwd'); }}
+              onPress={() => continueFrom('privateKey')}
             >
               <Text style={styles.btnPrimaryText}>Continue</Text>
             </Btn>
@@ -8651,7 +9061,7 @@ function OnboardingScreen({
               </Pressable>
             ))}
           </View>
-          <Pressable style={styles.btnOutline} onPress={() => setStep('welcome')}>
+          <Pressable style={styles.btnOutline} onPress={() => backTo('welcome')}>
             <Text style={styles.btnOutlineText}>Back</Text>
           </Pressable>
         </>}
@@ -8665,7 +9075,7 @@ function OnboardingScreen({
             <Text style={styles.warnItem}>✓  Thanos will never ask for this phrase</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Btn style={[styles.btnOutline, { flex: 0.8, marginTop: 0 }]} onPress={() => setStep('welcome')} ripple="rgba(59,122,247,0.18)">
+            <Btn style={[styles.btnOutline, { flex: 0.8, marginTop: 0 }]} onPress={() => backTo('welcome')} ripple="rgba(59,122,247,0.18)">
               <Text style={styles.btnOutlineText} numberOfLines={1}>Back</Text>
             </Btn>
             <Btn style={[styles.btnPrimary, { flex: 1.2, marginTop: 0 }]} onPress={() => setStep('create-show')}>
@@ -8777,7 +9187,7 @@ function OnboardingScreen({
             <Btn
               style={[styles.btnPrimary, { flex: 1, marginTop: 0, opacity: allConfirmed ? 1 : 0.45 }]}
               disabled={!allConfirmed}
-              onPress={() => setStep('create-pwd')}
+              onPress={() => continueFrom('create')}
             >
               <Text style={styles.btnPrimaryText}>Continue</Text>
             </Btn>
@@ -8849,12 +9259,12 @@ function OnboardingScreen({
             {importInput.trim().split(/\s+/).filter(Boolean).length} words
           </Text>
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
-            <Btn style={[styles.btnOutline, { flex: 1, marginTop: 0 }]} onPress={() => setStep('import-choose')} ripple="rgba(59,122,247,0.18)">
+            <Btn style={[styles.btnOutline, { flex: 1, marginTop: 0 }]} onPress={() => backTo('import-choose')} ripple="rgba(59,122,247,0.18)">
               <Text style={styles.btnOutlineText}>Back</Text>
             </Btn>
             <Btn
               style={[styles.btnPrimary, { flex: 1, marginTop: 0 }]}
-              onPress={() => { setImportKind('phrase'); setStep('import-pwd'); }}
+              onPress={() => continueFrom('phrase')}
             >
               <Text style={styles.btnPrimaryText}>Continue</Text>
             </Btn>
@@ -9314,13 +9724,17 @@ function AssetsScreen({ goBack, onOpenToken }: { goBack: () => void; onOpenToken
   const addr = useWalletAddr();
   const seed = useWalletSeed();
   const { assets, loading, offline, reload } = usePortfolio(addr, seed);
-  const { hiddenNetworks, hiddenAssets, toggleAsset } = useHiddenAssets();
+  const { hiddenNetworks, hiddenAssets, toggleAsset, showLessKnown, setShowLessKnown } = useHiddenAssets(addr);
 
   // Network-level hides (Settings → Manage networks) drop the row entirely —
   // no override here, that's managed in one place. Asset-level hides stay
   // reversible IN this list: the row keeps showing (dimmed) with the eye
   // toggle flipped, so hiding a token is never a dead end with no way back.
-  const heldAll     = assets.filter(a => a.usdValue > 0 && !hiddenNetworks.has(networkVisKey(a.chainId, a.sym)));
+  // Every token held is listed, priced or not (client 2026-10-17: "Show all
+  // assets on address"); less-known ones only once this wallet shows them.
+  const heldOnShownNetworks = assets.filter(a => a.balance > 0 && !hiddenNetworks.has(networkKeyOfAsset(a)));
+  const lessKnownCount = heldOnShownNetworks.filter(a => a.lessKnown).length;
+  const heldAll     = heldOnShownNetworks.filter(a => !a.lessKnown || showLessKnown);
   const heldVisible = heldAll.filter(a => !hiddenAssets.has(assetKeyOf(a)));
   const total    = heldVisible.reduce((s, a) => s + a.usdValue, 0) || 1;
   const totalUsd = heldVisible.reduce((s, a) => s + a.usdValue, 0);
@@ -9359,21 +9773,23 @@ function AssetsScreen({ goBack, onOpenToken }: { goBack: () => void; onOpenToken
         )}
 
         {!loading && offline && <Text style={{ color: C.textMuted, padding: 16, textAlign: 'center' }}>Couldn’t reach the indexer — pull to retry.</Text>}
-        {!loading && !offline && rows.length === 0 && <Text style={{ color: C.textMuted, padding: 16, textAlign: 'center' }}>No assets yet.</Text>}
+        {!loading && !offline && rows.length === 0 && lessKnownCount === 0 && <Text style={{ color: C.textMuted, padding: 16, textAlign: 'center' }}>No assets yet.</Text>}
 
         {rows.map((a, i) => (
           <Pressable
-            key={a.sym + i}
+            key={assetKeyOf(a)}
             onPress={() => onOpenToken(a.sym, a.chainId)}
-            style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: i < rows.length - 1 ? 1 : 0, borderBottomColor: C.borderSubtle, opacity: a.hidden ? 0.45 : 1 }}
+            style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: i < rows.length - 1 || lessKnownCount > 0 ? 1 : 0, borderBottomColor: C.borderSubtle, opacity: a.hidden ? 0.45 : 1 }}
           >
             <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: a.color, marginRight: 10 }}/>
-            <Avatar symbol={a.sym} color={a.color} size={34}/>
+            <Avatar symbol={a.sym} color={a.color} size={34} icon={heldTokenIcon(a)}/>
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={{ color: C.textPrimary, fontWeight: '700', fontSize: 14 }}>{a.name}</Text>
-              <Text style={{ color: C.textMuted, fontSize: 11 }}>{a.balanceText} {a.sym} · {a.hidden ? 'Hidden' : `${a.pct}%`}</Text>
+              <Text style={{ color: C.textMuted, fontSize: 11 }}>
+                {a.balanceText} {a.sym} · {a.hidden ? 'Hidden' : a.usdValue > 0 ? `${a.pct}%` : a.lessKnown ? 'Less known' : 'No price'}
+              </Text>
             </View>
-            <Text style={{ color: C.textPrimary, fontWeight: '700', fontSize: 14, marginRight: 10 }}>{formatUsd(a.usdValue)}</Text>
+            <Text style={{ color: C.textPrimary, fontWeight: '700', fontSize: 14, marginRight: 10 }}>{a.usdValue > 0 ? formatUsd(a.usdValue) : '—'}</Text>
             <Pressable
               hitSlop={10}
               onPress={(e) => { e.stopPropagation(); toggleAsset(assetKeyOf(a)); }}
@@ -9383,6 +9799,9 @@ function AssetsScreen({ goBack, onOpenToken }: { goBack: () => void; onOpenToken
             </Pressable>
           </Pressable>
         ))}
+        {lessKnownCount > 0 && (
+          <LessKnownToggle count={lessKnownCount} shown={showLessKnown} onPress={() => setShowLessKnown(!showLessKnown)}/>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -9451,7 +9870,7 @@ function MainnetWelcomeModal() {
           <Image source={require('./assets/images/Thanos_Logo_Transparent.png')} style={{ width: 60, height: 60, marginBottom: 14, resizeMode: 'contain' }}/>
           <Text style={{ color: C.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 6 }}>Welcome to Thanos Wallet</Text>
           <Text style={{ color: C.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center', marginBottom: 6 }}>
-            Your wallet is on Lithosphere Mainnet (chain 9005) — the Web4 home chain. The native coin is LITHO; Bitcoin, Solana, Cosmos and EVM networks are built in too.
+            Your wallet is on Lithosphere (chain 9005) — the Web4 home chain. The native coin is LITHO; Bitcoin, Solana, Cosmos and EVM networks are built in too.
           </Text>
           <Text style={{ color: C.textMuted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginBottom: 18 }}>
             Testnets such as Makalu aren't included — add one in Settings → Add network / token.
@@ -9725,9 +10144,16 @@ function App() {
   const [activeIdx, setActiveIdx]            = useState(0);
   const [accountCount, setAccountCountState] = useState(1);
   const [acctSheetOpen, setAcctSheetOpen]    = useState(false);
-  // Rename-account dialog (cross-platform — Alert.prompt is iOS-only).
+  // The account sheet's page: every wallet with its accounts, or the
+  // add-wallet choices.
+  const [sheetView, setSheetView] = useState<'list' | 'add'>('list');
+  // Rename-account dialog (cross-platform — Alert.prompt is iOS-only). The
+  // same dialog renames a wallet when renameWalletId is set.
   const [renameIdx, setRenameIdx]     = useState<number | null>(null);
+  const [renameWalletId, setRenameWalletId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  // Add-wallet flow (full-screen, the onboarding create / import steps).
+  const [addWalletStart, setAddWalletStart] = useState<AddWalletMode['start'] | null>(null);
   // iOS cannot present two Modals at once: opening the rename dialog while
   // the account sheet is still up silently fails (the pencil "did nothing").
   // So: stash the index, dismiss the sheet, and present the dialog from the
@@ -9759,6 +10185,16 @@ function App() {
       setRenameIdx(idx);
     }
   };
+  /* Run `fn` once the account sheet is gone — same iOS two-Modal rule as
+     openRename (Android stacks Modals, so it runs straight away). */
+  const afterSheetRef = useRef<(() => void) | null>(null);
+  const afterSheet = (fn: () => void) => {
+    if (!acctSheetOpen) { fn(); return; }
+    setAcctSheetOpen(false);
+    if (Platform.OS === 'ios') afterSheetRef.current = fn;
+    else fn();
+  };
+  const openAcctSheet = () => { setSheetView('list'); setAcctSheetOpen(true); };
   useEffect(() => {
     void loadAccountsFromStorage().then(() => {
       setActiveIdx(getActiveAccountIndex());
@@ -9780,6 +10216,8 @@ function App() {
   useEffect(() => {
     if (!unlocked || walletSeed.length === 0 || isPrivateKeyWallet(walletSeed)) return;
     let cancel = false;
+    // The count belongs to this wallet — never write it after another opened.
+    const wid = currentWalletId();
     // Deferred: discovery's BIP39 seed derivation is synchronous, so run it AFTER
     // the unlock transition + first paint settle. The home shows its cached-first
     // data instantly instead of the screen freezing until discovery finishes.
@@ -9787,7 +10225,7 @@ function App() {
       if (cancel) return;
       void discoverFundedAccountCount(walletSeed)
         .then((n) => {
-          if (cancel) return;
+          if (cancel || currentWalletId() !== wid) return;
           if (n > getAccountCount()) { setAccountCount(n); setAccountCountState(n); }
         })
         .catch(() => { /* best-effort */ });
@@ -9824,6 +10262,212 @@ function App() {
     setVisibleAccounts(getVisibleAccountIndices());
   };
 
+  /* ─── Wallets — several secrets in the one vault (lib/vault.ts) ──────────
+     Each wallet keeps its own accounts. Opening one makes its secret the
+     signing seed and loads its account settings; walletSeed / walletAddr then
+     flow through WalletSeedCtx / WalletAddrCtx exactly like an account switch,
+     so Home, Activity, Send / Receive, WalletConnect, the in-app browser and
+     Quantts all follow it. Same model as the extension popup. */
+  const [wallets, setWallets] = useState<WalletInfo[]>([]);
+  const [activeWalletId, setActiveWalletId] = useState(FIRST_WALLET_ID);
+  const [walletBusy, setWalletBusy] = useState(false);
+  const refreshWallets = async () => {
+    const r = await listWallets().catch(() => null);
+    if (r) { setWallets(r.wallets); setActiveWalletId(r.activeId); }
+  };
+  useEffect(() => { if (unlocked) void refreshWallets(); }, [unlocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hues = useMemo(() => walletHues(wallets.length ? wallets.map((w) => w.id) : [activeWalletId]), [wallets, activeWalletId]);
+  const activeHue = hues[activeWalletId] ?? 0;
+  const activeWallet: WalletInfo = wallets.find((w) => w.id === activeWalletId)
+    ?? { id: activeWalletId, name: 'Wallet 1', kind: isPrivateKeyWallet(walletSeed) ? 'key' : 'phrase' };
+
+  /** Show the wallet lib/vault.ts has just opened (its account settings are
+   *  already loaded into lib/accounts). */
+  const showOpenedWallet = (secret: string) => {
+    setWalletSeed(secret.split(' '));
+    setActiveWalletId(currentWalletId());
+    setActiveIdx(getActiveAccountIndex());
+    setAccountCountState(getAccountCount());
+    setVisibleAccounts(getVisibleAccountIndices());
+    // Mirror into the module-isolated signer.
+    void import('./lib/signer').then(s => s.setSeed(secret)).catch(() => { /* skip */ });
+  };
+  const openWalletById = async (id: string) => {
+    if (walletBusy || id === activeWalletId) return;
+    setWalletBusy(true);
+    try {
+      const w = await switchWallet(id);
+      if (w) showOpenedWallet(w.secret);
+      else Alert.alert('Couldn’t open the wallet', 'Lock and unlock Thanos, then try again.');
+    } finally { setWalletBusy(false); }
+  };
+  /** Open account `idx` of any wallet in one step (in the open wallet it's a
+   *  plain account switch). */
+  const openAccountIn = async (id: string, idx: number) => {
+    if (walletBusy) return;
+    if (id === activeWalletId) { switchAccount(idx); return; }
+    setWalletBusy(true);
+    try {
+      const w = await openAccount(id, idx);
+      if (w) showOpenedWallet(w.secret);
+      else Alert.alert('Couldn’t open the wallet', 'Lock and unlock Thanos, then try again.');
+    } finally { setWalletBusy(false); }
+  };
+  /** "+ Add account" under a wallet — any wallet, not only the open one: its
+   *  next derived account, opened. */
+  const addAccountIn = async (id: string) => {
+    if (walletBusy) return;
+    if (id === activeWalletId) { addAccount(); return; }
+    setWalletBusy(true);
+    try {
+      const r = await addAccountToWallet(id);
+      if ('error' in r) { Alert.alert('Couldn’t add an account', r.error); return; }
+      showOpenedWallet(r.wallet.secret);
+    } finally { setWalletBusy(false); }
+  };
+  // Cache the open wallet's account addresses (public, no secret) so the
+  // account sheet lists them whichever wallet is open.
+  useEffect(() => {
+    if (!unlocked || walletSeed.length === 0) return;
+    const addrs: Record<number, string> = {};
+    if (isPrivateKeyWallet(walletSeed)) addrs[0] = walletAddr;
+    else accountAddresses.forEach((a, i) => { if (a) addrs[i] = a; });
+    setWalletAddresses(activeWalletId, addrs);
+  }, [unlocked, walletSeed, walletAddr, accountAddresses, activeWalletId]);
+
+  /* Account sheet data: every wallet's accounts (read from storage for the
+     ones not open) and, for any wallet whose addresses aren't cached yet, a
+     one-off derivation from the unlocked vault once the sheet is up — one
+     wallet at a time, rows show a placeholder until theirs land. */
+  const [sheetAccounts, setSheetAccounts] = useState<Record<string, WalletAccounts>>({});
+  const [, setAddrTick] = useState(0);
+  useEffect(() => {
+    if (!acctSheetOpen || !unlocked) return;
+    let cancel = false;
+    let task: ReturnType<typeof InteractionManager.runAfterInteractions> | null = null;
+    void (async () => {
+      const out: Record<string, WalletAccounts> = {};
+      for (const w of wallets) out[w.id] = await readWalletAccounts(w.id);
+      if (cancel) return;
+      setSheetAccounts(out);
+      // A private key has the one account; a phrase wallet its listed ones.
+      const wanted = (w: WalletInfo) => (w.kind === 'key' ? [0] : out[w.id].visible);
+      const missing = wallets.filter((w) => w.id !== activeWalletId && wanted(w).some((i) => !getWalletAddresses(w.id)[i]));
+      if (!missing.length) return;
+      task = InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          for (const w of missing) {
+            await new Promise((r) => setTimeout(r, 30)); // let the sheet paint between wallets
+            if (cancel) return;
+            const secret = await readWalletSecret(w.id);
+            if (!secret || cancel) continue;
+            const words = secret.split(' ');
+            const want = wanted(w);
+            const addrs: Record<number, string> = {};
+            if (isPrivateKeyWallet(words)) addrs[0] = deriveEvmAddress(words);
+            else {
+              const all = deriveAccountAddresses(words, Math.max(...want) + 1);
+              for (const i of want) if (all[i]) addrs[i] = all[i];
+            }
+            setWalletAddresses(w.id, addrs);
+            setAddrTick((t) => t + 1);
+          }
+        })();
+      });
+    })();
+    return () => { cancel = true; task?.cancel(); };
+  }, [acctSheetOpen, unlocked, wallets, activeWalletId]);
+
+  /* Removing the last wallet is Settings → Delete wallet (erase, with the
+     backup check): the sheet routes there and Settings runs that flow. */
+  const fullDeleteRef = useRef(false);
+  const [fullDeleteTick, setFullDeleteTick] = useState(0);
+  const requestFullDelete = () => {
+    fullDeleteRef.current = true;
+    afterSheet(() => { setScreen('settings'); setFullDeleteTick((t) => t + 1); });
+  };
+
+  const closeRename = () => { setRenameIdx(null); setRenameWalletId(null); };
+  const openWalletRename = (id: string) => {
+    setRenameDraft(wallets.find((w) => w.id === id)?.name ?? '');
+    afterSheet(() => setRenameWalletId(id));
+  };
+  const saveWalletName = async (id: string, name: string) => {
+    if (!name.trim()) return;
+    if (await renameWallet(id, name)) await refreshWallets();
+    else Alert.alert('Couldn’t rename the wallet', 'Lock and unlock Thanos, then try again.');
+  };
+
+  /** Every listed address of a wallet — the open one from state; another from
+   *  the address cache, derived from its secret only if some are missing. */
+  const walletAddresses = async (id: string): Promise<string[]> => {
+    if (id === activeWalletId) {
+      return isPrivateKeyWallet(walletSeed) ? [walletAddr] : visibleAccounts.map((i) => accountAddresses[i]).filter(Boolean);
+    }
+    const { visible } = await readWalletAccounts(id);
+    const known = getWalletAddresses(id);
+    if (visible.every((i) => known[i])) return visible.map((i) => known[i]);
+    const secret = await readWalletSecret(id);
+    if (!secret) return [];
+    const words = secret.split(' ');
+    if (isPrivateKeyWallet(words)) return [deriveEvmAddress(words)];
+    const all = deriveAccountAddresses(words, Math.max(...visible) + 1);
+    return visible.map((i) => all[i]).filter(Boolean);
+  };
+
+  /* Remove a wallet (the last one goes through Settings → Delete wallet, which
+     erases the vault). Funds don't block it, as with accounts: what it holds
+     is checked first, and the user is reminded that only its recovery phrase
+     (or key) reaches the funds afterwards. Copy follows the extension's. */
+  const confirmRemoveWallet = async (id: string) => {
+    if (walletBusy) return;
+    if (wallets.length <= 1) { requestFullDelete(); return; }
+    const w = wallets.find((x) => x.id === id);
+    if (!w) return;
+    setWalletBusy(true);
+    let usd: number | null = null;
+    let threshold = 1;
+    let backedUp = false;
+    try {
+      backedUp = await isSeedBackedUp(id).catch(() => false);
+      const m = await import('./lib/account-balance');
+      threshold = m.DELETE_MAX_USD;
+      const addrs = await walletAddresses(id);
+      const vals = addrs.length ? await Promise.all(addrs.map((a) => m.accountUsdValue(a))) : [null];
+      usd = vals.some((v) => v == null) ? null : vals.reduce<number>((s, v) => s + (v ?? 0), 0);
+    } catch { usd = null; } finally { setWalletBusy(false); }
+
+    const label = `“${w.name}”`;
+    const noun = w.kind === 'key' ? 'private key' : 'recovery phrase';
+    const held = usd == null
+      ? 'We couldn’t check what this wallet holds.'
+      : usd > threshold ? `It holds about ${formatUsd(usd)}.` : null;
+    const body = held
+      ? `${backedUp ? '' : `You have NOT backed up ${label}'s ${noun}. `}${held} Removing it only takes it off this device — any funds stay at its address on the blockchain, and only its ${noun} can get them back.\n\nMake sure its ${noun} is written down before you continue.`
+      : backedUp
+        ? `Remove ${label} from this device? You can restore it later with its ${noun}. Your other wallets stay.`
+        : `You have NOT backed up ${label}'s ${noun}.\n\nIf you remove it now, its funds are gone permanently — nobody can recover them.`;
+    Alert.alert(`Remove ${w.name}?`, body, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive',
+        onPress: () => Alert.alert('Are you sure?', 'This cannot be undone.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Remove', style: 'destructive', onPress: () => { void doRemoveWallet(id); } },
+        ]),
+      },
+    ]);
+  };
+  const doRemoveWallet = async (id: string) => {
+    setWalletBusy(true);
+    try {
+      const r = await removeWallet(id);
+      if ('error' in r) { Alert.alert('Couldn’t remove the wallet', r.error); return; }
+      if (id === activeWalletId) showOpenedWallet(r.next.secret);
+      await refreshWallets();
+    } finally { setWalletBusy(false); }
+  };
+
   /* ─── Delete account ──────────────────────────────────────────────────
      Removal hides the HD index (accounts.ts hideAccount) so no address ever
      shifts. An account holding more than DELETE_MAX_USD, or whose balance
@@ -9833,8 +10477,8 @@ function App() {
   const [acctBusy, setAcctBusy] = useState(false);
   useEffect(() => { setVisibleAccounts(getVisibleAccountIndices()); }, [accountCount, activeIdx]);
   const ownAccounts = useMemo<OwnAccount[]>(
-    () => visibleAccounts.filter((i) => !!accountAddresses[i]).map((i) => ({ idx: i, name: getAccountName(i), address: accountAddresses[i] })),
-    [visibleAccounts, accountAddresses],
+    () => visibleAccounts.filter((i) => !!accountAddresses[i]).map((i) => ({ idx: i, name: getAccountName(i), address: accountAddresses[i], hue: accountHue(activeHue, i) })),
+    [visibleAccounts, accountAddresses, activeHue],
   );
 
   const confirmDeleteAccount = async (idx: number) => {
@@ -9907,14 +10551,11 @@ function App() {
       if (!key) return;
       const mnemonic = await openVaultWithKey(vault, key);
       if (mnemonic) {
-        setWalletSeed(mnemonic.split(' '));
+        // The vault may hold several wallets — open the one in use last time.
+        // showOpenedWallet also mirrors it into the module-isolated signer so
+        // signing requests don't have to thread the seed through every call site.
+        showOpenedWallet((await openWallet(mnemonic)).secret);
         setUnlocked(true);
-        // Mirror into the module-isolated signer so signing requests
-        // don't have to thread the seed through every call site.
-        try {
-          const signer = await import('./lib/signer');
-          signer.setSeed(mnemonic);
-        } catch { /* signer load failed — fall back to in-component signing */ }
       } else {
         clearSessionKey();
       }
@@ -9996,6 +10637,8 @@ function App() {
       void forgetQuanttSession().catch(() => { /* nothing to forget */ });
       setUnlocked(false);
       setWalletSeed([]);
+      setWallets([]);
+      setActiveWalletId(FIRST_WALLET_ID);
       setHasVault(false);
       clearSessionKey();
       void import('./lib/signer').then(s => s.clearSeed()).catch(() => { /* not loaded */ });
@@ -10069,11 +10712,11 @@ function App() {
                 <OnboardingScreen
                   hasVault={hasVault}
                   onComplete={(seed) => {
-                    setWalletSeed(seed);
+                    // lib/vault.ts openWallet has opened this wallet and loaded
+                    // its accounts; this also mirrors the seed into the signer.
+                    showOpenedWallet(seed.join(' '));
                     setHasVault(true);
                     setUnlocked(true);
-                    // Mirror seed into the module-isolated signer.
-                    void import('./lib/signer').then(s => s.setSeed(seed)).catch(() => { /* skip */ });
                     // Session key was cached inside createVault / openVault; no
                     // extra plaintext flag is written. Cold-start still requires
                     // password since the JS module is re-loaded — this is the
@@ -10104,6 +10747,152 @@ function App() {
     );
   }
 
+  // Account sheet's "Add account" / "Add wallet" buttons.
+  const sheetAddBtn = {
+    flex: 1, flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 8,
+    paddingVertical: 14, borderRadius: 14,
+    backgroundColor: colors.blueDim, borderWidth: 1, borderColor: 'rgba(59,122,247,0.28)',
+  };
+  const startAddWallet = () => {
+    if (wallets.length >= MAX_WALLETS) {
+      Alert.alert('Wallet limit reached', `Thanos holds up to ${MAX_WALLETS} wallets. Remove one to add another.`);
+      return;
+    }
+    setSheetView('add');
+  };
+  const walletsApi: WalletsApi = {
+    wallets, activeId: activeWalletId,
+    remove: (id) => { void confirmRemoveWallet(id); },
+    openSwitcher: openAcctSheet,
+    fullDeleteTick,
+    takeFullDelete: () => { const v = fullDeleteRef.current; fullDeleteRef.current = false; return v; },
+  };
+  const curAcctIdx = walletSeed.length > 0 && !isPrivateKeyWallet(walletSeed) ? activeIdx : 0;
+
+  /* ─── Account sheet: one card per wallet, its accounts under it ─────── */
+  const sheetWallets = wallets.length ? wallets : [activeWallet];
+  /** A wallet's "…" (or long-press): Rename when there are several, and
+   *  Remove — the last wallet's runs the full delete flow. */
+  const walletMenu = (w: WalletInfo) => Alert.alert(w.name, walletOriginLabel(w), [
+    ...(wallets.length > 1 ? [{ text: 'Rename', onPress: () => openWalletRename(w.id) }] : []),
+    { text: wallets.length > 1 ? 'Remove' : 'Delete wallet', style: 'destructive' as const, onPress: () => { void confirmRemoveWallet(w.id); } },
+    { text: 'Cancel', style: 'cancel' as const },
+  ]);
+  const renderWalletCard = (w: WalletInfo) => {
+    const open = w.id === activeWalletId;
+    const pk = w.kind === 'key';
+    const hue = hues[w.id] ?? 0;
+    const badge = originBadge(walletGroupOf(w), isDark);
+    // The open wallet from live state; the others from storage + the address cache.
+    const info: WalletAccounts | undefined = open
+      ? { active: pk ? 0 : activeIdx, visible: pk ? [0] : visibleAccounts, count: accountCount, names: {} }
+      : sheetAccounts[w.id];
+    const cached = open ? {} : getWalletAddresses(w.id);
+    const addrOf = (i: number) => (open ? (pk ? walletAddr : accountAddresses[i]) : cached[i]) ?? '';
+    const nameOf = (i: number) => (open ? getAccountName(i) : info?.names[i] || `Account ${i + 1}`);
+    const rows = !info ? [] : pk ? [0] : [info.active, ...info.visible.filter((i) => i !== info.active)];
+    const lastAccount = visibleAccounts.length <= 1;
+    return (
+      <View key={w.id} style={{
+        borderRadius: 16, borderWidth: 1, borderColor: open ? colors.blue : colors.borderSubtle,
+        backgroundColor: colors.bgElevated, marginBottom: 10, overflow: 'hidden',
+      }}>
+        {/* The wallet: icon, name, type badge, "…" */}
+        <Pressable
+          onPress={() => { if (!open) { setAcctSheetOpen(false); void openWalletById(w.id); } }}
+          onLongPress={() => walletMenu(w)}
+          style={({ pressed }) => [{
+            flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 10,
+            borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle,
+          }, pressed && !open && { opacity: 0.8 }]}
+          accessibilityLabel={`${w.name}, ${walletOriginLabel(w)}${open ? ', open' : ''}`}
+        >
+          <IdentityIcon hue={hue} size={34} wallet={w.kind}/>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800' }} numberOfLines={1}>{w.name}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+              <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, backgroundColor: badge.bg }}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: badge.fg }}>{walletOriginLabel(w)}</Text>
+              </View>
+              {!pk && info && (
+                <Text style={{ color: colors.textMuted, fontSize: 11.5 }}>
+                  {info.visible.length} {info.visible.length === 1 ? 'account' : 'accounts'}
+                </Text>
+              )}
+            </View>
+          </View>
+          <Pressable hitSlop={10} onPress={() => walletMenu(w)} accessibilityLabel={`${w.name} options`}
+            style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}>
+            <Ellipsis size={18} color={colors.textMuted} strokeWidth={2.2}/>
+          </Pressable>
+        </Pressable>
+
+        {/* Its accounts — the wallet's active one first. Tapping one opens
+            this wallet on that account in one step. */}
+        {rows.map((i) => {
+          const a = addrOf(i);
+          const on = open && i === (pk ? 0 : activeIdx);
+          const tag = a && !/^0x0{40}$/.test(a) ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : 'Loading address…';
+          return (
+            <Pressable
+              key={i}
+              onPress={() => { setAcctSheetOpen(false); void openAccountIn(w.id, i); }}
+              style={({ pressed }) => [{
+                flexDirection: 'row', alignItems: 'center', gap: 10,
+                paddingLeft: 22, paddingRight: 8, paddingVertical: 9,
+                backgroundColor: on ? colors.blueDim : 'transparent',
+              }, pressed && { opacity: 0.75 }]}
+              accessibilityLabel={on ? `${nameOf(i)} (active)` : `Open ${nameOf(i)} in ${w.name}`}
+            >
+              <IdentityIcon hue={accountHue(hue, i)} size={30} label={accountInitials(nameOf(i))}/>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: on ? '800' : '600' }} numberOfLines={1}>{nameOf(i)}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>{tag}</Text>
+              </View>
+              {on && <Check size={17} color={colors.blue} strokeWidth={2.6}/>}
+              {/* Rename / delete for the open wallet's accounts (a wallet
+                  must keep one account — delete is dimmed on the last). */}
+              {open && (
+                <Pressable hitSlop={8} onPress={() => openRename(i)} accessibilityLabel={`Rename ${nameOf(i)}`}
+                  style={({ pressed }) => [{ padding: 5 }, pressed && { opacity: 0.6 }]}>
+                  <Pencil size={15} color={colors.textMuted} strokeWidth={2.2}/>
+                </Pressable>
+              )}
+              {open && !pk && (
+                <Pressable hitSlop={8} onPress={() => void confirmDeleteAccount(i)} disabled={acctBusy}
+                  accessibilityLabel={`Delete ${nameOf(i)}`}
+                  style={({ pressed }) => [{ padding: 5, opacity: lastAccount ? 0.4 : 1 }, pressed && { opacity: 0.6 }]}>
+                  <Trash2 size={15} color={lastAccount ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
+                </Pressable>
+              )}
+            </Pressable>
+          );
+        })}
+        {!info && (
+          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={colors.textMuted}/>
+          </View>
+        )}
+
+        {/* "+ Add account" under every recovery-phrase wallet: the next
+            derived account of THIS wallet, opened. A private key has one. */}
+        {!pk && info && info.count < MAX_ACCOUNTS && (
+          <Pressable
+            onPress={() => { setAcctSheetOpen(false); void addAccountIn(w.id); }}
+            style={({ pressed }) => [{
+              flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 22, paddingVertical: 11,
+              borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle,
+            }, pressed && { opacity: 0.7 }]}
+            accessibilityLabel={`Add an account to ${w.name}`}
+          >
+            <Plus size={16} color={colors.blue} strokeWidth={2.6}/>
+            <Text style={{ color: colors.blue, fontSize: 13.5, fontWeight: '700' }}>Add account</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+  };
+
   return (
     <ThemeCtx.Provider value={colors}>
       <StylesCtx.Provider value={styles}>
@@ -10116,6 +10905,7 @@ function App() {
         <BrowserCtx.Provider value={openBrowser}>
         <SendNavCtx.Provider value={openSendTo}>
         <OwnAccountsCtx.Provider value={ownAccounts}>
+        <WalletsCtx.Provider value={walletsApi}>
           <SafeAreaView style={styles.root} onTouchStart={markUserActivity}>
             <StatusBar barStyle={colors.statusBar} backgroundColor={colors.bgBase} />
             <GlassAura dark={isDark}/>
@@ -10175,6 +10965,8 @@ function App() {
                 // has fully dismissed (two Modals can't be up at once).
                 const idx = pendingRenameRef.current;
                 if (idx !== null) { pendingRenameRef.current = null; setRenameIdx(idx); }
+                const next = afterSheetRef.current;
+                if (next) { afterSheetRef.current = null; next(); }
               }}
             >
               <Pressable
@@ -10192,111 +10984,73 @@ function App() {
                   }}
                 >
                   <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: colors.borderDefault, alignSelf: 'center', marginBottom: 16 }}/>
-                  {/* The active account heads the sheet with its own rename/
-                      delete; the list below holds only the OTHER accounts
-                      (client 2026-10-15: the active account isn't repeated in
-                      its own switcher). */}
-                  {(() => {
-                    const pk = isPrivateKeyWallet(walletSeed);
-                    const cur = pk ? 0 : activeIdx;
-                    // The account's litho1 address (its 0x is in Settings and
-                    // Receive, as the secondary "EVM address").
-                    const curTag = walletSeed.length > 0 ? shortRowAddr(displayAddr(walletAddr, LITHO_CHAIN_ID)) : '';
-                    // A wallet must keep one account — delete stays visible
-                    // but dimmed on the last one, with the reason in the alert.
-                    const lastAccount = visibleAccounts.length <= 1;
-                    const others = pk ? [] : visibleAccounts.filter((i) => i !== cur);
-                    const renameBtn = (i: number) => (
-                      <Pressable
-                        hitSlop={10}
-                        onPress={() => openRename(i)}
-                        style={({ pressed }) => [{ padding: 6 }, pressed && { opacity: 0.6 }]}
-                        accessibilityLabel={`Rename ${getAccountName(i)}`}
-                      >
-                        <Pencil size={16} color={i === cur ? colors.blue : colors.textMuted} strokeWidth={2.2}/>
-                      </Pressable>
-                    );
-                    const deleteBtn = (i: number) => (pk ? null : (
-                      <Pressable
-                        hitSlop={10}
-                        onPress={() => void confirmDeleteAccount(i)}
-                        disabled={acctBusy}
-                        style={({ pressed }) => [
-                          { padding: 6, opacity: lastAccount ? 0.4 : 1 },
-                          pressed && { opacity: 0.6 },
-                        ]}
-                        accessibilityLabel={`Delete ${getAccountName(i)}`}
-                      >
-                        <Trash2 size={16} color={lastAccount ? colors.textMuted : '#f87171'} strokeWidth={2.2}/>
-                      </Pressable>
-                    ));
-                    return (
-                      <>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                          <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }}>
-                            <Text style={{ color: '#fff', fontSize: 17, fontWeight: '800' }}>{cur + 1}</Text>
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }} numberOfLines={1}>
-                              {getAccountName(cur)}
+                  {/* Every wallet as a card with its accounts under it, in
+                      sections: created here, imported phrases, private keys
+                      (client 2026-10-17). Tap any account to open it —
+                      wallet and account in one step. */}
+                  {sheetView === 'list' && <>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }}>Wallets & accounts</Text>
+                      {(walletBusy || acctBusy) && <ActivityIndicator size="small" color={colors.blue}/>}
+                    </View>
+                    <ScrollView style={{ maxHeight: Dimensions.get('window').height * 0.62 }} bounces={false} showsVerticalScrollIndicator={false}>
+                      {WALLET_GROUPS.map((g) => {
+                        const list = sheetWallets.filter((w) => walletGroupOf(w) === g.key);
+                        if (!list.length) return null;
+                        return (
+                          <View key={g.key} style={{ marginBottom: 4 }}>
+                            <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginTop: 4, marginBottom: 8 }}>
+                              {g.title.toUpperCase()}
                             </Text>
-                            {curTag ? (
-                              <Text style={{ color: colors.textMuted, fontSize: 13, fontFamily: MONO, marginTop: 2 }} numberOfLines={1}>
-                                {curTag}
-                              </Text>
-                            ) : null}
+                            {list.map(renderWalletCard)}
                           </View>
-                          {renameBtn(cur)}
-                          {deleteBtn(cur)}
-                        </View>
-
-                        {others.map((i) => {
-                          const a = accountAddresses[i];
-                          const tag = a ? shortRowAddr(displayAddr(a, LITHO_CHAIN_ID)) : '';
-                          return (
-                            <Pressable
-                              key={i}
-                              onPress={() => { switchAccount(i); setAcctSheetOpen(false); }}
-                              style={({ pressed }) => [{
-                                flexDirection: 'row', alignItems: 'center', gap: 12,
-                                padding: 14, borderRadius: 14, marginBottom: 8,
-                                backgroundColor: colors.bgElevated,
-                                borderWidth: 1, borderColor: colors.borderSubtle,
-                              }, pressed && { opacity: 0.85 }]}
-                            >
-                              <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: colors.bgCard, alignItems: 'center', justifyContent: 'center' }}>
-                                <Text style={{ color: colors.textSecondary, fontSize: 15, fontWeight: '800' }}>{i + 1}</Text>
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }} numberOfLines={1}>{getAccountName(i)}</Text>
-                                {tag ? (
-                                  <Text style={{ color: colors.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 1 }} numberOfLines={1}>
-                                    {tag}
-                                  </Text>
-                                ) : null}
-                              </View>
-                              {renameBtn(i)}
-                              {deleteBtn(i)}
-                            </Pressable>
-                          );
-                        })}
-                      </>
-                    );
-                  })()}
-
-                  {accountCount < MAX_ACCOUNTS && !isPrivateKeyWallet(walletSeed) && (
-                    <Pressable
-                      onPress={() => { addAccount(); setAcctSheetOpen(false); }}
-                      style={({ pressed }) => [{
-                        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        paddingVertical: 14, borderRadius: 14, marginTop: 4,
-                        backgroundColor: colors.blueDim, borderWidth: 1, borderColor: 'rgba(59,122,247,0.28)',
-                      }, pressed && { opacity: 0.85 }]}
-                    >
+                        );
+                      })}
+                    </ScrollView>
+                    <Pressable onPress={startAddWallet} style={({ pressed }) => [sheetAddBtn, { marginTop: 6, flex: 0 }, pressed && { opacity: 0.85 }]}>
                       <Plus size={18} color={colors.blue} strokeWidth={2.6}/>
-                      <Text style={{ color: colors.blue, fontSize: 14, fontWeight: '700' }}>Add account</Text>
+                      <Text style={{ color: colors.blue, fontSize: 14, fontWeight: '700' }}>Add wallet</Text>
                     </Pressable>
-                  )}
+                  </>}
+
+                  {/* Add wallet — a new phrase (with the usual backup and
+                      verify steps) or an import, kept next to the others. */}
+                  {sheetView === 'add' && <>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                      <Pressable hitSlop={10} onPress={() => setSheetView('list')} accessibilityLabel="Back to wallets and accounts"
+                        style={({ pressed }) => [{ padding: 2 }, pressed && { opacity: 0.6 }]}>
+                        <ChevronLeft size={22} color={colors.textPrimary}/>
+                      </Pressable>
+                      <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 }}>Add wallet</Text>
+                    </View>
+                    <Text style={{ color: colors.textMuted, fontSize: 13, lineHeight: 19, marginBottom: 14 }}>
+                      Your current wallets stay — switch between them from this sheet. Each wallet has its own recovery phrase (or key) and accounts.
+                    </Text>
+                    {([
+                      { start: 'create', title: 'Create new wallet', sub: 'A new recovery phrase to write down and verify', Icon: Sparkles },
+                      { start: 'phrase', title: 'Import recovery phrase', sub: '12–24 words · full multi-chain wallet', Icon: Key },
+                      { start: 'privateKey', title: 'Import private key', sub: 'Single EVM account · no BTC/SOL/Cosmos', Icon: Shield },
+                    ] as const).map((o) => (
+                      <Pressable
+                        key={o.start}
+                        onPress={() => afterSheet(() => setAddWalletStart(o.start))}
+                        style={({ pressed }) => [{
+                          flexDirection: 'row', alignItems: 'center', gap: 12,
+                          padding: 14, borderRadius: 14, marginBottom: 8,
+                          backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.borderSubtle,
+                        }, pressed && { opacity: 0.85 }]}
+                      >
+                        <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: colors.blueDim, alignItems: 'center', justifyContent: 'center' }}>
+                          <o.Icon size={18} color={colors.blue}/>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }}>{o.title}</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 1 }}>{o.sub}</Text>
+                        </View>
+                        <ChevronRight size={18} color={colors.textMuted}/>
+                      </Pressable>
+                    ))}
+                  </>}
 
                   <Pressable onPress={() => setAcctSheetOpen(false)} style={{ paddingVertical: 14, marginTop: 6 }}>
                     <Text style={{ color: colors.textSecondary, fontSize: 14, fontWeight: '600', textAlign: 'center' }}>Cancel</Text>
@@ -10306,45 +11060,52 @@ function App() {
             </Modal>
 
             {/* Rename-account dialog — themed Modal because Alert.prompt is
-                iOS-only. Empty input resets to the "Account N" default. */}
+                iOS-only. Empty input resets to the "Account N" default. It
+                renames a wallet too (renameWalletId), where empty keeps the name. */}
             <Modal
-              visible={renameIdx !== null}
+              visible={renameIdx !== null || renameWalletId !== null}
               transparent
               animationType="fade"
               statusBarTranslucent
-              onRequestClose={() => setRenameIdx(null)}
+              onRequestClose={closeRename}
             >
               <Pressable
                 style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 28 }}
-                onPress={() => setRenameIdx(null)}
+                onPress={closeRename}
               >
                 <Pressable
                   onPress={() => {}}
                   style={{ backgroundColor: colors.bgSurface, borderRadius: 18, borderWidth: 1, borderColor: colors.borderSubtle, padding: 20 }}
                 >
-                  <Text style={{ color: colors.textPrimary, fontSize: 17, fontWeight: '800' }}>Rename account</Text>
+                  <Text style={{ color: colors.textPrimary, fontSize: 17, fontWeight: '800' }}>{renameWalletId !== null ? 'Rename wallet' : 'Rename account'}</Text>
                   <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2, marginBottom: 12 }}>
-                    {`Shown in place of "Account ${(renameIdx ?? 0) + 1}". Leave empty to reset.`}
+                    {renameWalletId !== null
+                      ? 'Shown in the wallet list and under the account name.'
+                      : `Shown in place of "Account ${(renameIdx ?? 0) + 1}". Leave empty to reset.`}
                   </Text>
                   <TextInput
                     value={renameDraft}
                     onChangeText={setRenameDraft}
-                    placeholder={`Account ${(renameIdx ?? 0) + 1}`}
+                    placeholder={renameWalletId !== null ? 'Wallet name' : `Account ${(renameIdx ?? 0) + 1}`}
                     placeholderTextColor={colors.textMuted}
-                    maxLength={MAX_ACCOUNT_NAME_LEN}
+                    maxLength={renameWalletId !== null ? MAX_WALLET_NAME_LEN : MAX_ACCOUNT_NAME_LEN}
                     autoFocus
                     autoCorrect={false}
                     style={{ backgroundColor: colors.bgElevated, borderRadius: 12, borderWidth: 1, borderColor: colors.borderDefault, paddingVertical: 10, paddingHorizontal: 12, color: colors.textPrimary, fontSize: 15 }}
                   />
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
                     <Pressable
-                      onPress={() => setRenameIdx(null)}
+                      onPress={closeRename}
                       style={({ pressed }) => [{ flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.borderSubtle, alignItems: 'center' }, pressed && { opacity: 0.85 }]}
                     >
                       <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>Cancel</Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => { if (renameIdx !== null) setAccountName(renameIdx, renameDraft); setRenameIdx(null); }}
+                      onPress={() => {
+                        if (renameWalletId !== null) void saveWalletName(renameWalletId, renameDraft);
+                        else if (renameIdx !== null) setAccountName(renameIdx, renameDraft);
+                        closeRename();
+                      }}
                       style={({ pressed }) => [{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.blue, alignItems: 'center' }, pressed && { opacity: 0.85 }]}
                     >
                       <Text style={{ color: '#fff', fontWeight: '700' }}>Save</Text>
@@ -10352,6 +11113,36 @@ function App() {
                   </View>
                 </Pressable>
               </Pressable>
+            </Modal>
+
+            {/* Add wallet — the onboarding create / import steps in add mode:
+                the new wallet joins the vault under the same password and
+                opens; Back on the first step closes. */}
+            <Modal
+              visible={addWalletStart !== null}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              onRequestClose={() => setAddWalletStart(null)}
+            >
+              {addWalletStart !== null && (
+                <SafeAreaView style={styles.root}>
+                  <StatusBar barStyle={colors.statusBar} backgroundColor={colors.bgBase}/>
+                  <GlassAura dark={isDark}/>
+                  <OnboardingScreen
+                    hasVault={false}
+                    onComplete={() => {}}
+                    addMode={{
+                      start: addWalletStart,
+                      onCancel: () => setAddWalletStart(null),
+                      onAdded: (secret) => {
+                        setAddWalletStart(null);
+                        showOpenedWallet(secret);
+                        void refreshWallets();
+                      },
+                    }}
+                  />
+                </SafeAreaView>
+              )}
             </Modal>
 
             {/* Top header — no bar: the account chip and the two round
@@ -10366,7 +11157,7 @@ function App() {
                    the previous tap-to-lock behaviour. */
                 onPress={() => {
                   if (walletSeed.length === 0) return;
-                  setAcctSheetOpen(true);   // dark-themed bottom sheet (below)
+                  openAcctSheet();   // dark-themed bottom sheet (below)
                 }}
                 onLongPress={() => Alert.alert(
                   'Lock wallet?',
@@ -10378,8 +11169,13 @@ function App() {
                 )}
               >
                 <HeaderGlass/>
-                <View style={styles.acctAvatar}><WalletIcon size={16} color="#fff" strokeWidth={2.2}/></View>
-                <Text style={styles.acctName} numberOfLines={1}>{getAccountName(walletSeed.length > 0 && !isPrivateKeyWallet(walletSeed) ? activeIdx : 0)}</Text>
+                {/* The active account's own icon; with several wallets the
+                    open wallet's name sits under the account name. */}
+                <IdentityIcon hue={accountHue(activeHue, curAcctIdx)} size={32} label={accountInitials(getAccountName(curAcctIdx))}/>
+                <View style={{ flexShrink: 1, minWidth: 0 }}>
+                  <Text style={styles.acctName} numberOfLines={1}>{getAccountName(curAcctIdx)}</Text>
+                  {wallets.length > 1 && <Text style={styles.acctWallet} numberOfLines={1}>{activeWallet.name}</Text>}
+                </View>
               </Pressable>
               {/* Theme toggle intentionally lives ONLY in Settings → General →
                   Theme (client request 2026-07-14) — no top-bar shortcut. */}
@@ -10472,6 +11268,7 @@ function App() {
             {/* Bottom tabs — a floating liquid-glass pill (client 2026-10-08). */}
             <LiquidTabBar screen={screen} onSelect={setScreen}/>
           </SafeAreaView>
+        </WalletsCtx.Provider>
         </OwnAccountsCtx.Provider>
         </SendNavCtx.Provider>
         </BrowserCtx.Provider>
@@ -10819,12 +11616,8 @@ function makeStyles(C: Colors) {
       backgroundColor: 'transparent',
       borderWidth: 1, borderColor: C.borderDefault,
     },
-    acctAvatar: {
-      width: 32, height: 32, borderRadius: 16,
-      backgroundColor: C.blue,
-      alignItems: 'center', justifyContent: 'center',
-    },
     acctName: { color: C.textPrimary, fontSize: 15, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1 },
+    acctWallet: { color: C.textMuted, fontSize: 10, lineHeight: 12, fontWeight: '600', marginTop: -1 },
 
     themeBtn: {
       width: 32, height: 32, borderRadius: 8,

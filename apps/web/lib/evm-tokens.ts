@@ -45,7 +45,7 @@ export const EVM_TOKENS: readonly EvmToken[] = [
   // ─── LITHO-ecosystem tokens on external chains (client request 2026-07-15).
   // Addresses from the projects' CoinGecko listings, independently verified
   // on-chain (symbol/decimals/name) before inclusion — same entries as
-  // apps/mobile/lib/evm-external.ts (keep in sync). LITHO/FGPT/JOT/LAX external
+  // apps/mobile/lib/evm-external.ts (keep in sync). LITHO/FGPT/JOT external
   // deployments are unverifiable today — add only with team-confirmed addresses.
   { chainId: 56,    symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18, coingeckoId: 'mansa-ai' },
   { chainId: 1,     symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18, coingeckoId: 'mansa-ai' },
@@ -54,6 +54,11 @@ export const EVM_TOKENS: readonly EvmToken[] = [
   { chainId: 1,     symbol: 'IMAGE', name: 'Imagen Network', address: '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2', decimals: 18, coingeckoId: 'imagen-ai' },
   { chainId: 1,     symbol: 'COLLE', name: 'Colle AI',       address: '0xc36983d3d9d379ddfb306dfb919099cb6730e355', decimals: 18, coingeckoId: 'colle-ai' },
   { chainId: 56,    symbol: 'COLLE', name: 'Colle AI',       address: '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b', decimals: 18, coingeckoId: 'colle-ai' },
+  // LAX: the contracts from the team's own deploy transactions (2026-10-17),
+  // each verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
+  { chainId: 1,     symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xbd79b7db6f70979df7f4124e161eb3586085d140', decimals: 18, coingeckoId: '' },
+  { chainId: 56,    symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0x11125e44843170467a7955d29776d63760ea4b6e', decimals: 18, coingeckoId: '' },
+  { chainId: 8453,  symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xe7645444eb4e8e04d886c7038dd0152d331d3680', decimals: 18, coingeckoId: '' },
 ];
 
 /** Stablecoins available on a given chain (for the Receive asset list). */

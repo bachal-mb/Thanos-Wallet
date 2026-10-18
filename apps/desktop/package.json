@@ -1,6 +1,6 @@
 {
   "name": "@thanos/desktop",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "description": "Thanos Wallet \u2014 Lithosphere-first desktop wallet with Bitcoin, Solana, MultX bridge, Ignite DEX and hardware-wallet support.",
   "homepage": "https://thanos.fi",

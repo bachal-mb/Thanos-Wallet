@@ -8,7 +8,7 @@
  */
 import { createContext, useContext } from 'react';
 import { parseUnits, getAddress } from 'ethers';
-import { lithoToEvm } from '@thanos/sdk-core';
+import { humanSendError, lithoToEvm } from '@thanos/sdk-core';
 import { getActiveAccountIndex } from '../../lib/vault';
 
 /** HD path for the active account. Computed at sign time so an account
@@ -137,6 +137,6 @@ export async function sendAsset(args: SendAssetArgs): Promise<string> {
   } catch (e) {
     const msg = (e as Error).message || 'Broadcast failed';
     if (/insufficient funds/i.test(msg)) throw new Error('Insufficient balance for amount + gas');
-    throw new Error(msg);
+    throw new Error(humanSendError(e));
   }
 }

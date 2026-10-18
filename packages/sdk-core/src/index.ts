@@ -35,6 +35,7 @@ export * from './portfolio/price-history';
 export * from './portfolio/tx-details';
 export * from './portfolio/allowances';
 export * from './portfolio/makalu-allowances';
+export * from './portfolio/token-discovery';
 export * from './history/chain-history';
 
 /* ── Swaps · bridge · DEX ────────────────────────────────────────────── */
@@ -78,6 +79,7 @@ export * from './storage/browser-store';
 export * from './utils/key-derivation';
 export * from './utils/mnemonic';
 export * from './utils/litho-address';
+export * from './utils/send-errors';
 export * from './imports/token-importer';
 export * from './desktop/keyvault';
 export * from './ecosystem';

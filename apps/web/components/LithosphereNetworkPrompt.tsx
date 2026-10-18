@@ -127,10 +127,10 @@ export function AddNetworkNudge() {
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, marginTop: 2 }}>
             {status === 'added'
-              ? `${walletName === 'MetaMask' ? 'MetaMask' : 'Your wallet'} can now use Lithosphere Mainnet.`
+              ? `${walletName === 'MetaMask' ? 'MetaMask' : 'Your wallet'} can now use Lithosphere.`
               : status === 'error'
                 ? `${walletName === 'MetaMask' ? 'MetaMask' : 'Your wallet'} didn’t add it. Open it and try again.`
-                : `Use Lithosphere Mainnet (LITHO) in ${walletName}. It takes one click.`}
+                : `Use Lithosphere (LITHO) in ${walletName}. It takes one click.`}
           </div>
         </div>
         <button
@@ -182,7 +182,7 @@ export function MainnetWelcomeCard() {
              style={{ display: 'block', margin: '0 auto 16px', objectFit: 'contain' }}/>
         <h2 style={{ fontSize: 19, fontWeight: 800, margin: '0 0 6px' }}>Welcome to Thanos</h2>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55, margin: '0 0 6px' }}>
-          Your wallet is on <strong>Lithosphere Mainnet</strong>{' '}
+          Your wallet is on <strong>Lithosphere</strong>{' '}
           (chain&nbsp;{MAINNET_CHAIN_ID}). The native coin is <strong>LITHO</strong>;
           Bitcoin, Solana, Cosmos and EVM networks are built in too.
         </p>

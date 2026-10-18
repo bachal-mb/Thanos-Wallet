@@ -74,7 +74,7 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   // "wrapped tokens on BNB and other chains are missing"). Addresses from the
   // projects' CoinGecko listings, then INDEPENDENTLY verified on-chain
   // (symbol/decimals/name read via each chain's RPC) before inclusion.
-  // LITHO / FGPT / JOT / LAX external deployments are NOT listed anywhere
+  // LITHO / FGPT / JOT external deployments are NOT listed anywhere
   // verifiable — add only with team-confirmed addresses, never from memory.
   { chainId: 56,    symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
   { chainId: 1,     symbol: 'MUSA',  name: 'Mansa AI',       address: '0x528605856a9eb9567688b0e912ed6961522a74d4', decimals: 18 },
@@ -83,6 +83,11 @@ export const EXT_EVM_TOKENS: readonly ExtEvmToken[] = [
   { chainId: 1,     symbol: 'IMAGE', name: 'Imagen Network', address: '0x1c3547dfa9ce7acd9c54ae49244575fa65bc75e2', decimals: 18 },
   { chainId: 1,     symbol: 'COLLE', name: 'Colle AI',       address: '0xc36983d3d9d379ddfb306dfb919099cb6730e355', decimals: 18 },
   { chainId: 56,    symbol: 'COLLE', name: 'Colle AI',       address: '0xaeb63742f2c7dd1538bbe2285b6789017a06b58b', decimals: 18 },
+  // LAX: the contracts from the team's own deploy transactions (2026-10-17),
+  // each verified on-chain (symbol LAX, "Lithosphere Algorithmic", 18 decimals).
+  { chainId: 1,     symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xbd79b7db6f70979df7f4124e161eb3586085d140', decimals: 18 },
+  { chainId: 56,    symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0x11125e44843170467a7955d29776d63760ea4b6e', decimals: 18 },
+  { chainId: 8453,  symbol: 'LAX',   name: 'Lithosphere Algorithmic', address: '0xe7645444eb4e8e04d886c7038dd0152d331d3680', decimals: 18 },
 ];
 
 export function extEvmTokensForChain(chainId: number): ExtEvmToken[] {
@@ -142,5 +147,26 @@ export async function getAllExtEvmTokenBalances(address: string): Promise<Array<
     const raw = await readOrNull(() =>
       new Contract(token.address, ERC20_BALANCE_ABI, getExtEvmProvider(token.chainId)).balanceOf(address) as Promise<bigint>);
     return { token, balance: raw == null ? null : (parseFloat(formatUnits(raw, token.decimals)) || 0) };
+  }));
+}
+
+const ERC20_HOLDING_ABI = [...ERC20_BALANCE_ABI, 'function decimals() view returns (uint8)'];
+
+/** Balance (base units) and decimals of tokens an explorer says `owner`
+ *  holds (lib/discovered-assets.ts), read from each token's own chain — the
+ *  explorer's figures stand in only where a read fails (null). A token on a
+ *  network the wallet doesn't have reads as null. */
+export async function readErc20Holdings(
+  owner: string,
+  tokens: Array<{ chainId: number; address: string }>,
+): Promise<Array<{ raw: bigint | null; decimals: number | null }>> {
+  return Promise.all(tokens.map(async (t) => {
+    if (!getExtEvmChain(t.chainId)) return { raw: null, decimals: null };
+    const c = new Contract(t.address, ERC20_HOLDING_ABI, getExtEvmProvider(t.chainId));
+    const [raw, dec] = await Promise.all([
+      readOrNull(() => c.balanceOf(owner) as Promise<bigint>),
+      readOrNull(async () => Number(await (c.decimals() as Promise<bigint>))),
+    ]);
+    return { raw, decimals: dec != null && Number.isInteger(dec) && dec >= 0 && dec <= 36 ? dec : null };
   }));
 }
