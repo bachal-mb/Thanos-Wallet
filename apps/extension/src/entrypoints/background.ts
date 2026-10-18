@@ -14,16 +14,11 @@
 import { dappChainByHex, toChainHex, DEFAULT_DAPP_CHAIN_ID } from '../lib/dapp-chains';
 import { loadCustomAssets } from '../lib/custom-assets';
 import { contentScriptOrigin, isExtensionSender, type MessageSenderLike } from '../lib/message-sender';
+import { followActiveAccount, type ConnectionMap } from '../lib/dapp-connections';
 
 // Prime user-added custom networks so the dApp provider can switch to them
 // after a service-worker (re)start.
 const customAssetsReady = loadCustomAssets().catch(() => {});
-
-interface Connection {
-  address:     string;
-  connectedAt: number;
-}
-type ConnectionMap = Record<string, Connection>;
 
 interface PendingApproval {
   id:       string;
@@ -532,10 +527,17 @@ export default defineBackground(() => {
       return false;
     }
 
-    // 3) Popup announcing the unlocked address so other tabs see it.
+    // 3) Popup announcing the unlocked address so other tabs see it. Connected
+    //    sites move to it first (lib/dapp-connections.ts), so the event, their
+    //    eth_accounts and the account the popup signs with all agree.
     if (m?.type === 'thanos-active-address' && typeof m.address === 'string') {
-      browser.storage.local.set({ active_address: m.address });
-      broadcastEvent('accountsChanged', [m.address]);
+      const address = m.address;
+      void (async () => {
+        const moved = followActiveAccount(await getConnections(), address);
+        if (moved) await setConnections(moved);
+        await browser.storage.local.set({ active_address: address });
+        broadcastEvent('accountsChanged', [address]);
+      })();
       sendResponse({ ok: true });
       return false;
     }
