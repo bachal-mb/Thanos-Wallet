@@ -25,3 +25,26 @@ export function followActiveAccount(conns: ConnectionMap, address: string): Conn
   for (const origin of stale) next[origin] = { ...conns[origin], address };
   return next;
 }
+
+/** EIP-2255 permission a connected site holds: eth_accounts, restricted to its account. */
+export interface AccountsPermission {
+  invoker:          string;
+  parentCapability: 'eth_accounts';
+  caveats:          [{ type: 'restrictReturnedAccounts'; value: string[] }];
+  date:             number;
+}
+
+export function accountsPermission(origin: string, conn: Connection): AccountsPermission {
+  return {
+    invoker:          origin,
+    parentCapability: 'eth_accounts',
+    caveats:          [{ type: 'restrictReturnedAccounts', value: [conn.address] }],
+    date:             conn.connectedAt,
+  };
+}
+
+/** Whether a wallet_requestPermissions / wallet_revokePermissions request is about eth_accounts. */
+export function asksForAccounts(params: unknown): boolean {
+  const first = Array.isArray(params) ? params[0] : undefined;
+  return !!first && typeof first === 'object' && 'eth_accounts' in first;
+}

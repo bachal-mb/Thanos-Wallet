@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { followActiveAccount, type ConnectionMap } from '../src/lib/dapp-connections';
+import { accountsPermission, asksForAccounts, followActiveAccount, type ConnectionMap } from '../src/lib/dapp-connections';
 
 const A = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const B = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
@@ -35,4 +35,20 @@ test('only the sites on another account change', () => {
   }, B);
   assert.deepEqual(moved?.['https://lithovault.ai'], { address: B, connectedAt: 1 });
   assert.deepEqual(moved?.['https://app.example'], { address: B, connectedAt: 2 });
+});
+
+test('a connected site holds eth_accounts restricted to its account (EIP-2255)', () => {
+  assert.deepEqual(accountsPermission('https://lithovault.ai', { address: A, connectedAt: 7 }), {
+    invoker:          'https://lithovault.ai',
+    parentCapability: 'eth_accounts',
+    caveats:          [{ type: 'restrictReturnedAccounts', value: [A] }],
+    date:             7,
+  });
+});
+
+test('only eth_accounts permission requests are understood', () => {
+  assert.equal(asksForAccounts([{ eth_accounts: {} }]), true);
+  assert.equal(asksForAccounts([{ snap_dialog: {} }]), false);
+  assert.equal(asksForAccounts([]), false);
+  assert.equal(asksForAccounts(undefined), false);
 });
