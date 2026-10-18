@@ -68,6 +68,7 @@ import {
   type Contact as AbContact,
 } from './address-book';
 import { setContactEncryptionKey } from './contact-crypto';
+import { MultiSigView } from './multisig';
 import {
   laxStatus, laxCards, laxCardTransactions, laxCurrencies, laxTopUp,
   laxRegisterThanosAccount, hasThanosAccount, laxAccountEmail, cardNumberOf,
@@ -167,7 +168,7 @@ declare global {
 }
 
 /* ──────────────────────── Types ──────────────────────── */
-type View = 'dashboard' | 'market' | 'portfolio' | 'transactions' | 'staking' | 'settings' | 'discover' | 'nfts';
+type View = 'dashboard' | 'market' | 'portfolio' | 'transactions' | 'staking' | 'settings' | 'discover' | 'nfts' | 'multisig';
 
 /* ──────────────────────── Icons ──────────────────────── */
 const Ic = (path: React.ReactNode) => ({ size = 16, color = 'currentColor' }: { size?: number; color?: string }) => (
@@ -6279,6 +6280,7 @@ const NAV: { key: View | 'swap'; label: string }[] = [
   { key: 'portfolio',    label: 'Assets'   },
   { key: 'market',       label: 'Market'   },
   { key: 'discover',     label: 'Discover' },
+  { key: 'multisig',     label: 'MultiSig' },
   { key: 'transactions', label: 'Activity' },
 ];
 
@@ -7080,6 +7082,7 @@ function App() {
           {view === 'staking'      && <StakingView/>}
           {view === 'discover'     && <DiscoverView/>}
           {view === 'nfts'         && <NftsView/>}
+          {view === 'multisig'     && <MultiSigView address={walletSeed.length > 0 ? addrs.evm : ''} accountIndex={activeIdx} unlocked={walletSeed.length > 0}/>}
           {view === 'settings'     && <SettingsView toggleTheme={toggleTheme} isDark={isDark} walletAddr={walletAddr} onLock={lock} onDeleteWallet={deleteWallet} onWalletBackedUp={isSeedBackedUp()}
             walletCount={wallets.length} openWalletName={openWalletName} onManageWallets={openWalletsPanel}/>}
         </div>

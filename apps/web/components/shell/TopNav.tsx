@@ -26,6 +26,7 @@ const NAV = [
   { href: '/app/assets',     label: 'Assets'   },
   { href: '/app/market',     label: 'Market'   },
   { href: '/app/discover',   label: 'Discover' },
+  { href: '/app/multisig',   label: 'MultiSig' },
   { href: '/app/history',    label: 'Activity' },
 ];
 

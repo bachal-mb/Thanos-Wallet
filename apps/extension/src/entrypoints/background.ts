@@ -14,22 +14,18 @@
 import { dappChainByHex, toChainHex, DEFAULT_DAPP_CHAIN_ID } from '../lib/dapp-chains';
 import { loadCustomAssets } from '../lib/custom-assets';
 import { contentScriptOrigin, isExtensionSender, type MessageSenderLike } from '../lib/message-sender';
+import { accountsPermission, asksForAccounts, followActiveAccount, type ConnectionMap } from '../lib/dapp-connections';
 
 // Prime user-added custom networks so the dApp provider can switch to them
 // after a service-worker (re)start.
 const customAssetsReady = loadCustomAssets().catch(() => {});
-
-interface Connection {
-  address:     string;
-  connectedAt: number;
-}
-type ConnectionMap = Record<string, Connection>;
 
 interface PendingApproval {
   id:       string;
   origin:   string;
   method:   string;
   params:   unknown[];
+  reply?:   'accounts' | 'permissions';   // what the request answers: eth_requestAccounts or wallet_requestPermissions
   tabId?:   number;   // originating tab — for durable result delivery (see below)
   pageId?:  string;   // the page-side request id the content script correlates on
 }
@@ -245,15 +241,23 @@ async function handleRpc(req: RpcMessage, sender?: { tab?: { id?: number } }): P
 
     /* ─ Connection request (popup approval) ──────────────────────── */
 
-    case 'eth_requestAccounts': {
-      const conns = await getConnections();
-      const existing = conns[origin];
-      if (existing) return [existing.address];
+    /* wallet_requestPermissions (EIP-2255) always asks, connected or not: a
+       site's Connect button can then (re)connect it with the account the user
+       has now, instead of the one approved the first time. eth_requestAccounts
+       answers a connected site at once. Both show the same connect sheet. */
+    case 'eth_requestAccounts':
+    case 'wallet_requestPermissions': {
+      const asking = method === 'wallet_requestPermissions';
+      if (asking && !asksForAccounts(params)) throw rpcError(-32602, 'Only the eth_accounts permission is supported');
+      if (!asking) {
+        const existing = (await getConnections())[origin];
+        if (existing) return [existing.address];
+      }
 
       // Need user approval. Stash a pending approval and open the popup.
       const id = `${Date.now()}.${Math.random().toString(36).slice(2)}`;
       await browser.storage.session.set({
-        pending_approval: { id, origin, method, params, tabId, pageId } as PendingApproval,
+        pending_approval: { id, origin, method: 'eth_requestAccounts', params: [], tabId, pageId, reply: asking ? 'permissions' : 'accounts' } as PendingApproval,
       });
       notifyRequest('Connection request', `${hostOf(origin)} wants to connect to Thanos Wallet.`);
       try { await browser.action.openPopup(); }
@@ -262,9 +266,26 @@ async function handleRpc(req: RpcMessage, sender?: { tab?: { id?: number } }): P
         // gesture; the user can still click the toolbar icon manually.
       }
 
-      return await new Promise<string[]>((resolve, reject) => {
-        pendingResolvers.set(id, { resolve: resolve as never, reject });
+      return await new Promise<unknown>((resolve, reject) => {
+        pendingResolvers.set(id, { resolve, reject });
       });
+    }
+
+    case 'wallet_getPermissions': {
+      const conn = (await getConnections())[origin];
+      return conn ? [accountsPermission(origin, conn)] : [];
+    }
+
+    /* The site's Disconnect: forget the connection; the next eth_requestAccounts asks again. */
+    case 'wallet_revokePermissions': {
+      if (!asksForAccounts(params)) throw rpcError(-32602, 'Only the eth_accounts permission is supported');
+      const conns = await getConnections();
+      if (conns[origin]) {
+        delete conns[origin];
+        await setConnections(conns);
+        emitToOrigin(origin, 'accountsChanged', []);
+      }
+      return null;
     }
 
     /* ─ Chain switching (EIP-3085/3326) ──────────────────────────── */
@@ -366,6 +387,16 @@ async function handleRpc(req: RpcMessage, sender?: { tab?: { id?: number } }): P
 
 function rpcError(code: number, message: string): Error & { code: number } {
   return Object.assign(new Error(message), { code });
+}
+
+/* An EIP-1193 event for the tabs of one origin only (e.g. the site that just disconnected). */
+async function emitToOrigin(origin: string, event: string, ...args: unknown[]): Promise<void> {
+  for (const tab of await browser.tabs.query({})) {
+    if (tab.id == null) continue;
+    let tabOrigin = '';
+    try { tabOrigin = tab.url ? new URL(tab.url).origin : ''; } catch { /* unparseable */ }
+    if (tabOrigin === origin) browser.tabs.sendMessage(tab.id, { type: 'thanos-event', event, args }).catch(() => {});
+  }
 }
 
 /* Broadcast an EIP-1193 event to every tab that has the content script.
@@ -512,16 +543,18 @@ export default defineBackground(() => {
         const appr = stored.pending_approval;
         if (m.approved && m.address) {
           const origin = appr?.origin;
+          const conn = { address: m.address!, connectedAt: Date.now() };
           if (origin) {
             const conns = await getConnections();
-            conns[origin] = { address: m.address!, connectedAt: Date.now() };
+            conns[origin] = conn;
             await setConnections(conns);
             await browser.storage.local.set({ active_address: m.address });
             broadcastEvent('accountsChanged', [m.address]);
           }
           await browser.storage.session.remove('pending_approval');
-          pending?.resolve([m.address]);
-          pushResultToTab(appr?.tabId, appr?.pageId, { result: [m.address] });
+          const result = appr?.reply === 'permissions' && origin ? [accountsPermission(origin, conn)] : [m.address];
+          pending?.resolve(result);
+          pushResultToTab(appr?.tabId, appr?.pageId, { result });
         } else {
           await browser.storage.session.remove('pending_approval');
           pending?.reject(rpcError(4001, 'User rejected the request'));
@@ -532,10 +565,17 @@ export default defineBackground(() => {
       return false;
     }
 
-    // 3) Popup announcing the unlocked address so other tabs see it.
+    // 3) Popup announcing the unlocked address so other tabs see it. Connected
+    //    sites move to it first (lib/dapp-connections.ts), so the event, their
+    //    eth_accounts and the account the popup signs with all agree.
     if (m?.type === 'thanos-active-address' && typeof m.address === 'string') {
-      browser.storage.local.set({ active_address: m.address });
-      broadcastEvent('accountsChanged', [m.address]);
+      const address = m.address;
+      void (async () => {
+        const moved = followActiveAccount(await getConnections(), address);
+        if (moved) await setConnections(moved);
+        await browser.storage.local.set({ active_address: address });
+        broadcastEvent('accountsChanged', [address]);
+      })();
       sendResponse({ ok: true });
       return false;
     }

@@ -2,7 +2,7 @@
   "name": "@thanos/extension",
   "version": "1.0.13",
   "private": true,
-  "description": "Thanos Wallet — Lithosphere-first browser extension with Bitcoin, Solana, MultX bridge, Ignite DEX and dApp EIP-1193 provider.",
+  "description": "Thanos Wallet \u2014 Lithosphere-first browser extension with Bitcoin, Solana, MultX bridge, Ignite DEX and dApp EIP-1193 provider.",
   "homepage": "https://thanos.fi",
   "author": {
     "name": "Thanos Wallet",
@@ -24,7 +24,7 @@
     "safari:convert": "bash safari/convert.sh",
     "safari:archive": "bash safari/archive.sh",
     "typecheck": "wxt prepare && tsc --noEmit",
-    "test": "tsx --test test/vault.test.ts",
+    "test": "tsx --test test/vault.test.ts test/dapp-connections.test.ts",
     "lint": "echo 'no lint configured'"
   },
   "dependencies": {
@@ -36,6 +36,7 @@
     "@reown/walletkit": "^1.5.5",
     "@solana/web3.js": "^1.98.0",
     "@thanos/api-client": "workspace:*",
+    "@thanos/multisig": "workspace:*",
     "@thanos/sdk-core": "workspace:^",
     "@walletconnect/core": "^2.21.6",
     "@walletconnect/types": "^2.21.6",

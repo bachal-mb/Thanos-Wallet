@@ -2,13 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Wallet, HDNodeWallet, Mnemonic, randomBytes, getAddress } from 'ethers';
 import { MultXBridgePanel } from './MultXBridgePanel';
+import { MultiSigScreen } from './MultiSigScreen';
 import { MULTX_CONFIG } from '../../lib/multx-thanos';
 import {
   ArrowUpRight, ArrowDownLeft, Repeat, Plus,
   Home, Clock, Settings as SettingsIcon, ChevronLeft, ChevronRight,
   Copy, Check, Eye, EyeOff, Lock, Moon, Sun, User, Search, Pencil, Trash2,
   Fingerprint, Key, AlertTriangle, Globe, Zap, Bell, Shield,
-  Sparkles, CreditCard, Maximize2, Wallet as WalletIcon, KeyRound, Ellipsis, ChevronDown,
+  Sparkles, CreditCard, Maximize2, Wallet as WalletIcon, KeyRound, Ellipsis, ChevronDown, Users,
 } from 'lucide-react';
 import {
   createVault, openVault, openVaultWithKey,
@@ -5096,7 +5097,7 @@ function SessionsPanel() {
 
 /* ──────────────────────── App shell ──────────────────────── */
 
-type Tab = 'home' | 'discover' | 'activity' | 'settings';
+type Tab = 'home' | 'discover' | 'multisig' | 'activity' | 'settings';
 type Modal = 'send' | 'receive' | 'swap' | 'walletconnect' | 'address-book' | 'permissions' | 'recovery' | 'change-password' | 'manage-networks' | null;
 
 /* Reveal the secret recovery phrase — re-prompts the password (defense in
@@ -6532,6 +6533,7 @@ function App() {
             wallets={wallets} activeWalletId={activeWalletId}
           />}
           {tab === 'discover' && <DiscoverScreen/>}
+          {tab === 'multisig' && <MultiSigScreen seed={seed} evmAddr={evmAddr} accountIndex={activeIdx}/>}
           {tab === 'activity' && <ActivityScreen/>}
           {tab === 'settings' && <SettingsScreen isDark={isDark} onToggleTheme={toggleTheme} onLock={lock} onOpenWalletConnect={() => setModal('walletconnect')} onOpenAddressBook={() => setModal('address-book')} onOpenPermissions={() => setModal('permissions')} address={lithoAddr || evmAddr} accountName={getAccountName(activeIdx)} onOpenChangePassword={() => setModal('change-password')} onOpenRecoveryPhrase={() => setModal('recovery')} onDeleteWallet={deleteWallet} onOpenManageNetworks={() => setModal('manage-networks')}
             onOpenWallets={openWallets} walletCount={wallets.length} openWalletName={activeWallet?.name}/>}
@@ -6540,6 +6542,7 @@ function App() {
           {([
             { k: 'home',     l: 'Home',     I: Home },
             { k: 'discover', l: 'Discover', I: Globe },
+            { k: 'multisig', l: 'MultiSig', I: Users },
             { k: 'activity', l: 'Activity', I: Clock },
             { k: 'settings', l: 'Settings', I: SettingsIcon },
           ] as const).map(t => (
