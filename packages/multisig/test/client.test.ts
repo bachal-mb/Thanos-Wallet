@@ -43,12 +43,13 @@ async function bridgeFor(index: number, canSign = true) {
 }
 
 describe('network configuration', () => {
-  it('defaults to Lithosphere Mainnet, unavailable until Litho Vault is published there', () => {
+  it('defaults to Lithosphere Mainnet with the Litho Vault deployment published there', () => {
     const n = multisigNetwork();
     expect(n.chain.id).toBe(9005);
     expect(n.chain.rpcUrl).toBe('https://rpc-mainnet.litho.ai');
-    expect(n.factory).toBeNull();
-    expect(new MultisigClient(n, null, { store: memoryStore() }).available).toBe(false);
+    expect(n.factory).toBe('0x9842b6449764Fe12b277aA5E46f57a4E0Ee541c4');
+    expect(n.deployBlock).toBe(12525735);
+    expect(new MultisigClient(n, null, { store: memoryStore() }).available).toBe(true);
   });
 
   it('takes a testnet or local deployment from the build environment, and only https services', () => {

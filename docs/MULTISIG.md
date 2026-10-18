@@ -43,9 +43,25 @@ Vault app; Thanos MultiSig links there when `APP_URL` is set.
 ## When it turns on
 
 By default Thanos MultiSig runs on **Lithosphere Mainnet (9005)** with the Litho Vault deployment
-published in the SDK (`PUBLISHED_DEPLOYMENTS[9005]`). Until the Litho Vault contracts are deployed
-and published, every client shows "Thanos MultiSig opens on Lithosphere Mainnet as soon as the Litho
-Vault contracts are deployed there" and offers no actions. After the mainnet deployment:
+published in the SDK (`PUBLISHED_DEPLOYMENTS[9005]`). Litho Vault was deployed there on 2026-10-18
+(release v1.0.1, from block 12525735), and the vendored SDK carries those addresses, so MultiSig is
+on in every client:
+
+| Contract | Address |
+|---|---|
+| Factory | `litho1npptv3yhvnlp9vnh4f0ydat6fc8w2swyvx4plw` (`0x9842b6449764Fe12b277aA5E46f57a4E0Ee541c4`) |
+| Lens | `litho1s5a2dqlpnu6ekltpr5jr0eg72tkxz07gz9eq90` (`0x853aa683E19F359B7D611D2437e51E52ec613Fc8`) |
+| AI guard | `litho1y0zxsnht6vv3m5a3xql7um9eulrahlv54qmexe` (`0x23c4684eeBD3191dd3b1303FeE6Cb9E7c7DbFD94`) |
+| Recovery guard | `litho1rqxujmgdtsruezk2z8hqwmgf2dsltcn3tzrwnz` (`0x180Dc96d0D5C07CC8aca11eE076d095361f5e271`) |
+| Freeze guard | `litho1s2nlxwptupj5am54tdvu5q3c2qnzg4r7hna32k` (`0x82A7F3382be0654eee955B59ca0238502624547E`) |
+| Account implementation | `litho1p5aqfcu4d5keztj944cplt757u6hxlszu9ckln` (`0x0d3A04E3956D2d912E45AD701faFD4F735737E02`) |
+
+The Litho Vault app is at https://lithovault.ai and its indexer at https://lithovault.ai/indexer
+(set them as `APP_URL` and `INDEXER_URL` below for the settings links and gasless approvals).
+
+On a network without a published deployment every client shows "Thanos MultiSig opens on <network>
+as soon as the Litho Vault contracts are deployed there" and offers no actions. To pick up a new
+deployment:
 
 1. In litho-vault: `npm run publish-addresses -w @litho-vault/launch`, then
    `npm run pack -w @litho-vault/sdk`.

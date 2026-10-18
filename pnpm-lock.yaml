@@ -2660,7 +2660,7 @@ packages:
     resolution: {integrity: sha512-v63cWm7wUGiLkyKaD36u6st5lK4LqxIdOk+uzCImIq52D547kZpkFWfaPE5rQz/h3ObXmBjxO/piwxFLITcXIA==}
 
   '@litho-vault/sdk@file:vendor/litho-vault-sdk-1.0.0.tgz':
-    resolution: {integrity: sha512-FazLnjvhSGdoCgt17SLW3EDLfQ/Mb06IOVSjlRQV7iBXwuqYl97TR0NKLKlUWJA6PuAjW/7swBuqaM8greCbtQ==, tarball: file:vendor/litho-vault-sdk-1.0.0.tgz}
+    resolution: {integrity: sha512-02xsHEUPvWAuAqf7gzKDN5bV0AzwpWjXdIVAQ5YVzS2qP+KpDfQNAI5pFFH+sCJFZlI3eNgvfFoWgqRjGoHfwQ==, tarball: file:vendor/litho-vault-sdk-1.0.0.tgz}
     version: 1.0.0
     peerDependencies:
       ethers: ^6.13.0
