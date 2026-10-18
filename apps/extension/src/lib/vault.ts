@@ -216,21 +216,26 @@ export function loadVault(): EncryptedVault | null {
  * one wallet) or a wallet set: JSON { format, wallets: [{ id, name, secret }] }.
  * One password and one AES key cover them all; adding or removing a wallet
  * re-encrypts with the cached session key, so the password never changes.
+ * Same model and plaintext format as the phone (apps/mobile/lib/vault.ts).
  *
  * Per-wallet state (active account, account count, names, hidden accounts,
  * backup flag) lives under the same localStorage keys as before for the
  * first wallet ('w0' — so existing installs keep theirs) and under
  * `<key>@<walletId>` for each wallet added after it. Which wallet is open
- * is remembered in thanos.active_wallet (an id, not a secret). */
+ * is remembered in thanos.active_wallet (an id, not a secret), and each
+ * wallet's public metadata (created / imported, its accounts' addresses)
+ * in thanos.wallet_meta — see "Public per-wallet metadata" below. */
 export interface StoredWallet { id: string; name: string; secret: string }
 export interface WalletSet { wallets: StoredWallet[] }
 export interface WalletInfo { id: string; name: string; kind: 'phrase' | 'key' }
 
 const WALLET_SET_FORMAT = 'thanos.wallets/1';
-const FIRST_WALLET_ID = 'w0';
+export const FIRST_WALLET_ID = 'w0';
 const STORAGE_KEY_ACTIVE_WALLET = 'thanos.active_wallet';
 export const MAX_WALLETS = 10;
 export const MAX_WALLET_NAME_LEN = 24;
+const LOCKED_ERR = 'The wallet is locked — unlock it and try again.';
+const SAVE_ERR = 'Couldn’t save the wallet — nothing was changed. Try again.';
 
 function readActiveWalletId(): string {
   if (typeof window === 'undefined') return FIRST_WALLET_ID;
@@ -238,7 +243,11 @@ function readActiveWalletId(): string {
 }
 let currentWalletId = readActiveWalletId();
 
-/** localStorage key for the open wallet's copy of a per-wallet setting. */
+/** The wallet whose settings the per-wallet getters read (the open wallet). */
+export function getCurrentWalletId(): string { return currentWalletId; }
+
+/** localStorage key for a wallet's copy of a per-wallet setting (the open
+ *  wallet's unless `id` names another). */
 function nsKey(base: string, id = currentWalletId): string {
   return id === FIRST_WALLET_ID ? base : `${base}@${id}`;
 }
@@ -275,11 +284,16 @@ export function currentWallet(set: WalletSet): StoredWallet {
   return set.wallets.find(w => w.id === currentWalletId) ?? set.wallets[0];
 }
 
-/** Open a wallet: per-wallet settings follow it, and it's remembered. */
+/** Open a wallet: per-wallet settings follow it, and it's remembered. The
+ *  first wallet is the default when nothing is stored, so a single-wallet
+ *  install never gains the key. */
 export function selectWallet(set: WalletSet, id?: string): StoredWallet {
   const w = set.wallets.find(x => x.id === (id ?? readActiveWalletId())) ?? set.wallets[0];
   currentWalletId = w.id;
-  if (typeof window !== 'undefined') localStorage.setItem(STORAGE_KEY_ACTIVE_WALLET, w.id);
+  if (typeof window !== 'undefined') {
+    if (w.id === FIRST_WALLET_ID) localStorage.removeItem(STORAGE_KEY_ACTIVE_WALLET);
+    else localStorage.setItem(STORAGE_KEY_ACTIVE_WALLET, w.id);
+  }
   return w;
 }
 
@@ -288,6 +302,15 @@ export function normaliseSecret(raw: string): string {
   const s = raw.trim();
   if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return (s.startsWith('0x') ? s : `0x${s}`).toLowerCase();
   return s.toLowerCase().split(/\s+/).join(' ');
+}
+
+/* Wallet-set writes run one at a time: each re-reads the vault, so two
+   overlapping changes (a double click, two popups) can't drop a wallet. */
+let queue: Promise<unknown> = Promise.resolve();
+function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queue.then(fn, fn);
+  queue = run.catch(() => {});
+  return run;
 }
 
 /** Re-encrypt new plaintext under the same password-derived key (same KDF
@@ -301,11 +324,25 @@ async function sealWithKey(vault: EncryptedVault, keyBytes: Uint8Array, plaintex
   return { ...vault, iv: bytesToHex(iv), ciphertext: bytesToHex(new Uint8Array(ct)) };
 }
 
-async function openSet(keyBytes: Uint8Array): Promise<{ vault: EncryptedVault; set: WalletSet } | null> {
+interface OpenSet { vault: EncryptedVault; set: WalletSet }
+async function openSet(keyBytes: Uint8Array | null): Promise<OpenSet | null> {
+  if (!keyBytes) return null;
   const vault = loadVault();
   if (!vault) return null;
   const pt = await openVaultWithKey(vault, keyBytes);
   return pt === null ? null : { vault, set: parseWalletSet(pt) };
+}
+
+/** Seal new plaintext, then read it back: unless the stored vault decrypts to
+ *  exactly that plaintext, the previous vault is put back and false returned. */
+async function writePlaintext(o: OpenSet, keyBytes: Uint8Array, plaintext: string): Promise<boolean> {
+  try {
+    saveVault(await sealWithKey(o.vault, keyBytes, plaintext));
+    const back = loadVault();
+    if (back && (await openVaultWithKey(back, keyBytes)) === plaintext) return true;
+  } catch { /* restore below */ }
+  try { saveVault(o.vault); } catch { /* storage refused both writes */ }
+  return false;
 }
 
 export async function listWallets(keyBytes: Uint8Array): Promise<{ wallets: WalletInfo[]; activeId: string } | null> {
@@ -314,29 +351,35 @@ export async function listWallets(keyBytes: Uint8Array): Promise<{ wallets: Wall
   return { wallets: o.set.wallets.map(walletInfo), activeId: currentWallet(o.set).id };
 }
 
-/** Add another wallet (phrase or private key) to the vault and open it. */
+/** Add another wallet (a new or imported phrase, or a private key) to the
+ *  vault and open it on its first account. The user holds its secret — it
+ *  was just created and verified, or imported — so it counts as backed up.
+ *  `origin` labels it in the wallet list (a private key is always imported). */
 export async function addWallet(
-  keyBytes: Uint8Array, rawSecret: string, name?: string,
+  keyBytes: Uint8Array, rawSecret: string, name?: string, origin: WalletOrigin = 'imported',
 ): Promise<{ wallet: StoredWallet } | { error: string }> {
-  const o = await openSet(keyBytes);
-  if (!o) return { error: 'The wallet is locked — unlock it and try again.' };
-  const secret = normaliseSecret(rawSecret);
-  const existing = o.set.wallets.find(w => normaliseSecret(w.secret) === secret);
-  if (existing) return { error: `This wallet is already in Thanos (“${existing.name}”).` };
-  if (o.set.wallets.length >= MAX_WALLETS) return { error: `Thanos holds up to ${MAX_WALLETS} wallets.` };
-  const taken = new Set(o.set.wallets.map(w => w.name));
-  let n = o.set.wallets.length + 1;
-  while (taken.has(`Wallet ${n}`)) n++;
-  const wallet: StoredWallet = {
-    id: `w${bytesToHex(randomBytes(4))}`,
-    name: name?.trim().slice(0, MAX_WALLET_NAME_LEN) || `Wallet ${n}`,
-    secret,
-  };
-  const set: WalletSet = { wallets: [...o.set.wallets, wallet] };
-  saveVault(await sealWithKey(o.vault, keyBytes, serializeWalletSet(set)));
-  selectWallet(set, wallet.id);
-  setSeedBackedUp(true); // imported — the user already holds this secret
-  return { wallet };
+  return serial(async () => {
+    const o = await openSet(keyBytes);
+    if (!o) return { error: LOCKED_ERR };
+    const secret = normaliseSecret(rawSecret);
+    if (!secret) return { error: 'Enter a recovery phrase or a private key.' };
+    const existing = o.set.wallets.find(w => normaliseSecret(w.secret) === secret);
+    if (existing) return { error: `This wallet is already in Thanos (“${existing.name}”).` };
+    if (o.set.wallets.length >= MAX_WALLETS) return { error: `Thanos holds up to ${MAX_WALLETS} wallets.` };
+    const taken = new Set(o.set.wallets.map(w => w.name));
+    let n = o.set.wallets.length + 1;
+    while (taken.has(`Wallet ${n}`)) n++;
+    let id = `w${bytesToHex(randomBytes(4))}`;
+    while (id === FIRST_WALLET_ID || o.set.wallets.some(w => w.id === id)) id = `w${bytesToHex(randomBytes(4))}`;
+    const wallet: StoredWallet = { id, name: name?.trim().slice(0, MAX_WALLET_NAME_LEN) || `Wallet ${n}`, secret };
+    const set: WalletSet = { wallets: [...o.set.wallets, wallet] };
+    if (!(await writePlaintext(o, keyBytes, serializeWalletSet(set)))) return { error: SAVE_ERR };
+    forgetWalletSettings(id); // nothing should be there — never inherit stale settings
+    setWalletOrigin(id, isPrivateKeyString(secret) ? 'imported' : origin);
+    selectWallet(set, id);
+    setSeedBackedUp(true);
+    return { wallet };
+  });
 }
 
 /** Open another wallet already in the vault. */
@@ -346,41 +389,77 @@ export async function switchWallet(keyBytes: Uint8Array, id: string): Promise<St
   return selectWallet(o.set, id);
 }
 
+/** Open one account of any wallet in one step: that wallet (if it isn't the
+ *  open one) and its account `idx` (if listed — else the wallet's own). */
+export async function openAccount(keyBytes: Uint8Array, id: string, idx: number): Promise<StoredWallet | null> {
+  const o = await openSet(keyBytes);
+  const w = o?.set.wallets.find(x => x.id === id);
+  if (!o || !w) return null;
+  if (id !== currentWalletId) selectWallet(o.set, id);
+  if (!isPrivateKeyString(w.secret) && getVisibleAccountIndices().includes(idx)) setActiveAccountIndex(idx);
+  return w;
+}
+
+/** Add the next derived account to a recovery-phrase wallet — any wallet in
+ *  the vault, not only the open one — and open the wallet on it. Indices
+ *  are never reused (a removed account stays hidden at its index). */
+export async function addAccountToWallet(
+  keyBytes: Uint8Array, id: string,
+): Promise<{ wallet: StoredWallet; idx: number } | { error: string }> {
+  const o = await openSet(keyBytes);
+  if (!o) return { error: LOCKED_ERR };
+  const w = o.set.wallets.find(x => x.id === id);
+  if (!w) return { error: 'That wallet is not in Thanos.' };
+  if (isPrivateKeyString(w.secret)) return { error: 'This wallet was imported from a private key, so it has just the one account.' };
+  if (readWalletAccounts(id).count >= MAX_ACCOUNTS) return { error: `A wallet holds up to ${MAX_ACCOUNTS} accounts.` };
+  if (id !== currentWalletId) selectWallet(o.set, id);
+  const idx = getAccountCount();
+  setAccountCount(idx + 1);
+  setActiveAccountIndex(idx);
+  return { wallet: w, idx };
+}
+
+/** Rename a wallet. A lone first wallet is stored as its bare secret (no
+ *  name), so it isn't renamed — names only tell several wallets apart, and
+ *  the vault isn't rewritten until a second wallet is added. */
 export async function renameWallet(keyBytes: Uint8Array, id: string, name: string): Promise<boolean> {
-  const o = await openSet(keyBytes);
-  const trimmed = name.trim().slice(0, MAX_WALLET_NAME_LEN);
-  if (!o || !trimmed) return false;
-  const set: WalletSet = { wallets: o.set.wallets.map(w => (w.id === id ? { ...w, name: trimmed } : w)) };
-  // A lone first wallet is stored as its bare secret (no name); naming it
-  // means keeping the set form.
-  const pt = set.wallets.length === 1
-    ? JSON.stringify({ format: WALLET_SET_FORMAT, wallets: set.wallets })
-    : serializeWalletSet(set);
-  saveVault(await sealWithKey(o.vault, keyBytes, pt));
-  return true;
+  return serial(async () => {
+    const o = await openSet(keyBytes);
+    const trimmed = name.trim().slice(0, MAX_WALLET_NAME_LEN);
+    if (!o || !trimmed || !o.set.wallets.some(w => w.id === id)) return false;
+    const set: WalletSet = { wallets: o.set.wallets.map(w => (w.id === id ? { ...w, name: trimmed } : w)) };
+    if (set.wallets.length === 1 && set.wallets[0].id === FIRST_WALLET_ID) return false;
+    return writePlaintext(o, keyBytes, serializeWalletSet(set));
+  });
 }
 
-/** Remove one wallet (never the last — deleting that is clearVault) and
- *  open the first remaining one if it was open. */
+/** Remove one wallet — never the last (deleting that is clearVault) — with
+ *  its settings and metadata, and open the first remaining one if it was open. */
 export async function removeWallet(keyBytes: Uint8Array, id: string): Promise<{ next: StoredWallet } | { error: string }> {
-  const o = await openSet(keyBytes);
-  if (!o) return { error: 'The wallet is locked — unlock it and try again.' };
-  if (o.set.wallets.length <= 1) return { error: 'This is the only wallet.' };
-  const set: WalletSet = { wallets: o.set.wallets.filter(w => w.id !== id) };
-  if (set.wallets.length === o.set.wallets.length) return { error: 'That wallet is not in Thanos.' };
-  saveVault(await sealWithKey(o.vault, keyBytes, serializeWalletSet(set)));
-  if (typeof window !== 'undefined') {
-    for (const base of [STORAGE_KEYS.seedBackedUp, STORAGE_KEY_ACTIVE_IDX, STORAGE_KEY_ACCT_COUNT, STORAGE_KEY_ACCT_NAMES, STORAGE_KEY_ACCT_HIDDEN]) {
-      if (id !== FIRST_WALLET_ID) localStorage.removeItem(nsKey(base, id));
-    }
-  }
-  const next = currentWalletId === id ? selectWallet(set, set.wallets[0].id) : currentWallet(set);
-  return { next };
+  return serial(async () => {
+    const o = await openSet(keyBytes);
+    if (!o) return { error: LOCKED_ERR };
+    if (o.set.wallets.length <= 1) return { error: 'This is the only wallet.' };
+    const set: WalletSet = { wallets: o.set.wallets.filter(w => w.id !== id) };
+    if (set.wallets.length === o.set.wallets.length) return { error: 'That wallet is not in Thanos.' };
+    if (!(await writePlaintext(o, keyBytes, serializeWalletSet(set)))) return { error: SAVE_ERR };
+    const next = currentWalletId === id ? selectWallet(set, set.wallets[0].id) : currentWallet(set);
+    forgetWalletSettings(id);
+    return { next };
+  });
 }
 
-export function isSeedBackedUp(): boolean {
+/** One wallet's secret — to derive the addresses of a wallet that isn't open
+ *  and for the remove-wallet balance check (null when locked / unknown id). */
+export async function readWalletSecret(keyBytes: Uint8Array | null, id: string): Promise<string | null> {
+  const o = await openSet(keyBytes);
+  return o?.set.wallets.find(w => w.id === id)?.secret ?? null;
+}
+
+/** The open wallet's backup flag, or another wallet's when `walletId` names it. */
+export function isSeedBackedUp(walletId?: string): boolean {
   if (typeof window === 'undefined') return false;
-  return localStorage.getItem(nsKey(STORAGE_KEYS.seedBackedUp)) === '1';
+  return localStorage.getItem(nsKey(STORAGE_KEYS.seedBackedUp, walletId ?? currentWalletId)) === '1';
 }
 export function setSeedBackedUp(backedUp: boolean): void {
   if (typeof window === 'undefined') return;
@@ -412,12 +491,15 @@ const STORAGE_KEY_ACTIVE_IDX = 'thanos.active_account_idx';
 const STORAGE_KEY_ACCT_COUNT = 'thanos.account_count';
 export const MAX_ACCOUNTS = 10;
 
+/** A wallet's copy of an integer setting, clamped to [min, max]. */
+function readIntSetting(base: string, id: string, fallback: number, min: number, max: number): number {
+  if (typeof window === 'undefined') return fallback;
+  const n = Number.parseInt(localStorage.getItem(nsKey(base, id)) ?? String(fallback), 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
 export function getActiveAccountIndex(): number {
-  if (typeof window === 'undefined') return 0;
-  const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACTIVE_IDX));
-  const n = Number.parseInt(raw ?? '0', 10);
-  if (!Number.isFinite(n) || n < 0 || n >= MAX_ACCOUNTS) return 0;
-  return n;
+  return readIntSetting(STORAGE_KEY_ACTIVE_IDX, currentWalletId, 0, 0, MAX_ACCOUNTS - 1);
 }
 
 export function setActiveAccountIndex(idx: number): void {
@@ -427,11 +509,7 @@ export function setActiveAccountIndex(idx: number): void {
 }
 
 export function getAccountCount(): number {
-  if (typeof window === 'undefined') return 1;
-  const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACCT_COUNT));
-  const n = Number.parseInt(raw ?? '1', 10);
-  if (!Number.isFinite(n) || n < 1 || n > MAX_ACCOUNTS) return 1;
-  return n;
+  return readIntSetting(STORAGE_KEY_ACCT_COUNT, currentWalletId, 1, 1, MAX_ACCOUNTS);
 }
 
 export function setAccountCount(n: number): void {
@@ -446,10 +524,10 @@ export function setAccountCount(n: number): void {
 const STORAGE_KEY_ACCT_NAMES = 'thanos.account_names';
 export const MAX_ACCOUNT_NAME_LEN = 24;
 
-function readNames(): Record<number, string> {
+function readNames(id = currentWalletId): Record<number, string> {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACCT_NAMES));
+    const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACCT_NAMES, id));
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const clean: Record<number, string> = {};
@@ -492,26 +570,33 @@ export function setAccountName(idx: number, name: string): void {
    forever and the account simply stops being listed. */
 const STORAGE_KEY_ACCT_HIDDEN = 'thanos.account_hidden';
 
-export function getHiddenAccounts(): number[] {
+function readHidden(id: string): number[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACCT_HIDDEN));
+    const raw = localStorage.getItem(nsKey(STORAGE_KEY_ACCT_HIDDEN, id));
     if (!raw) return [];
     const arr = JSON.parse(raw) as unknown[];
     return arr.filter((n): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < MAX_ACCOUNTS);
   } catch { return []; }
 }
 
+export function getHiddenAccounts(): number[] {
+  return readHidden(currentWalletId);
+}
+
 export function isAccountHidden(idx: number): boolean {
   return getHiddenAccounts().includes(idx);
 }
 
+function visibleOf(count: number, hidden: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) if (!hidden.includes(i)) out.push(i);
+  return out.length ? out : [0];
+}
+
 /** Indices the UI should list. Never empty — a wallet always keeps one. */
 export function getVisibleAccountIndices(): number[] {
-  const hidden = new Set(getHiddenAccounts());
-  const out: number[] = [];
-  for (let i = 0; i < getAccountCount(); i++) if (!hidden.has(i)) out.push(i);
-  return out.length ? out : [0];
+  return visibleOf(getAccountCount(), getHiddenAccounts());
 }
 
 /** Hide (delete) an account. Refuses the last visible one. Balance checks
@@ -530,6 +615,132 @@ export function hideAccount(idx: number): boolean {
   return true;
 }
 
+/* ─── Every wallet's accounts ────────────────────────────────────────── */
+
+/** A wallet's accounts as the wallet list shows them. */
+export interface WalletAccounts {
+  /** Its active account (the one it opens on). */
+  active: number;
+  /** Listed (not hidden) indices, ascending. */
+  visible: number[];
+  /** How many indices have been provisioned (hidden ones included). */
+  count: number;
+  /** Custom names; the rest are "Account N". */
+  names: Record<number, string>;
+}
+
+/** Any wallet's accounts, read from its own copy of the settings — the
+ *  open wallet's or another's — without opening it. */
+export function readWalletAccounts(walletId: string): WalletAccounts {
+  const count = readIntSetting(STORAGE_KEY_ACCT_COUNT, walletId, 1, 1, MAX_ACCOUNTS);
+  const visible = visibleOf(count, readHidden(walletId));
+  const idx = readIntSetting(STORAGE_KEY_ACTIVE_IDX, walletId, 0, 0, MAX_ACCOUNTS - 1);
+  return { active: visible.includes(idx) ? idx : visible[0], visible, count, names: readNames(walletId) };
+}
+
+/* ─── Public per-wallet metadata ──────────────────────────────────────────
+ * thanos.wallet_meta = { [walletId]: { origin?, addrs?: { [idx]: '0x…' } } }
+ * — the same key and shape as the phone (apps/mobile/lib/accounts.ts). Never
+ * a secret: how the wallet came in (created in Thanos / imported) and its
+ * accounts' derived 0x addresses, so the wallet list can show every wallet's
+ * accounts without decrypting and re-deriving each one. */
+export type WalletOrigin = 'created' | 'imported';
+interface WalletMeta { origin?: WalletOrigin; addrs?: Record<number, string> }
+const STORAGE_KEY_WALLET_META = 'thanos.wallet_meta';
+
+const isAddr = (v: unknown): v is string =>
+  typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v) && !/^0x0{40}$/.test(v);
+
+function readMeta(): Record<string, WalletMeta> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_WALLET_META);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, { origin?: unknown; addrs?: Record<string, unknown> }>;
+    const out: Record<string, WalletMeta> = {};
+    for (const [id, m] of Object.entries(parsed)) {
+      if (!m || typeof m !== 'object') continue;
+      const meta: WalletMeta = {};
+      if (m.origin === 'created' || m.origin === 'imported') meta.origin = m.origin;
+      if (m.addrs && typeof m.addrs === 'object') {
+        const addrs: Record<number, string> = {};
+        for (const [k, v] of Object.entries(m.addrs)) {
+          const i = Number.parseInt(k, 10);
+          if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && isAddr(v)) addrs[i] = v;
+        }
+        meta.addrs = addrs;
+      }
+      out[id] = meta;
+    }
+    return out;
+  } catch { return {}; }
+}
+function writeMeta(meta: Record<string, WalletMeta>): void {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(STORAGE_KEY_WALLET_META, JSON.stringify(meta)); } catch { /* best-effort cache */ }
+}
+
+/** Created in Thanos or imported — unknown for wallets from before this was recorded. */
+export function getWalletOrigin(walletId: string): WalletOrigin | undefined {
+  return readMeta()[walletId]?.origin;
+}
+export function setWalletOrigin(walletId: string, origin: WalletOrigin): void {
+  const meta = readMeta();
+  if (meta[walletId]?.origin === origin) return;
+  meta[walletId] = { ...meta[walletId], origin };
+  writeMeta(meta);
+}
+
+/** A wallet's known account addresses (0x) by HD index. */
+export function getWalletAddresses(walletId: string): Record<number, string> {
+  return { ...readMeta()[walletId]?.addrs };
+}
+/** Record derived account addresses (merged into what's known; public data —
+ *  anything that isn't a 0x address is dropped). */
+export function setWalletAddresses(walletId: string, addrs: Record<number, string>): void {
+  const meta = readMeta();
+  const known = meta[walletId]?.addrs ?? {};
+  const next = { ...known };
+  let changed = false;
+  for (const [k, v] of Object.entries(addrs)) {
+    const i = Number(k);
+    if (Number.isInteger(i) && i >= 0 && i < MAX_ACCOUNTS && isAddr(v) && known[i] !== v) { next[i] = v; changed = true; }
+  }
+  if (!changed) return;
+  meta[walletId] = { ...meta[walletId], addrs: next };
+  writeMeta(meta);
+}
+
+/** Settings each wallet keeps its own copy of (nsKey). */
+const PER_WALLET_KEYS = [
+  STORAGE_KEYS.seedBackedUp, STORAGE_KEY_ACTIVE_IDX, STORAGE_KEY_ACCT_COUNT, STORAGE_KEY_ACCT_NAMES, STORAGE_KEY_ACCT_HIDDEN,
+];
+
+/** Drop a removed wallet's settings and metadata. */
+function forgetWalletSettings(walletId: string): void {
+  if (typeof window === 'undefined') return;
+  for (const base of PER_WALLET_KEYS) localStorage.removeItem(nsKey(base, walletId));
+  const meta = readMeta();
+  if (walletId in meta) {
+    delete meta[walletId];
+    writeMeta(meta);
+  }
+}
+
+/** Every wallet deleted (clearVault): drop the added wallets' settings and
+ *  all wallet metadata. The first wallet's own keys stay as they always were. */
+function forgetAddedWallets(): void {
+  if (typeof window === 'undefined') return;
+  const added: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && PER_WALLET_KEYS.some(base => k.startsWith(`${base}@`))) added.push(k);
+  }
+  for (const k of added) localStorage.removeItem(k);
+  localStorage.removeItem(STORAGE_KEY_WALLET_META);
+}
+
+/** Erase every wallet from this browser. */
 export function clearVault(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(STORAGE_KEYS.vault);
@@ -537,6 +748,7 @@ export function clearVault(): void {
   localStorage.removeItem(STORAGE_KEYS.seedBackedUp);
   localStorage.removeItem(STORAGE_KEY_ACTIVE_WALLET);
   currentWalletId = FIRST_WALLET_ID;
+  forgetAddedWallets();
   localStorage.removeItem(STORAGE_KEYS.legacyMnemonic);
   localStorage.removeItem(STORAGE_KEYS.legacyPassword);
   localStorage.removeItem(STORAGE_KEYS.legacyUnlocked);

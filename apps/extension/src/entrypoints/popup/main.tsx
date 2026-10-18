@@ -8,7 +8,7 @@ import {
   Home, Clock, Settings as SettingsIcon, ChevronLeft, ChevronRight,
   Copy, Check, Eye, EyeOff, Lock, Moon, Sun, User, Search, Pencil, Trash2,
   Fingerprint, Key, AlertTriangle, Globe, Zap, Bell, Shield,
-  Sparkles, CreditCard, Maximize2, Wallet as WalletIcon,
+  Sparkles, CreditCard, Maximize2, Wallet as WalletIcon, KeyRound, Ellipsis, ChevronDown,
 } from 'lucide-react';
 import {
   createVault, openVault, openVaultWithKey,
@@ -20,9 +20,11 @@ import {
   getAccountCount,       setAccountCount,
   getAccountName, getCustomAccountName, setAccountName,
   getVisibleAccountIndices, hideAccount,
-  MAX_ACCOUNTS, isPrivateKeyWallet, isPrivateKeyString,
-  parseWalletSet, selectWallet, currentWallet, listWallets, addWallet, switchWallet, removeWallet,
-  MAX_WALLETS, type WalletInfo,
+  MAX_ACCOUNTS, MAX_ACCOUNT_NAME_LEN, isPrivateKeyWallet, isPrivateKeyString,
+  parseWalletSet, selectWallet, currentWallet, listWallets, addWallet, removeWallet, renameWallet,
+  openAccount, addAccountToWallet, readWalletSecret, readWalletAccounts, getCurrentWalletId,
+  getWalletOrigin, setWalletOrigin, getWalletAddresses, setWalletAddresses,
+  MAX_WALLETS, MAX_WALLET_NAME_LEN, type WalletInfo, type WalletAccounts,
 } from '../../lib/vault';
 import {
   persistSessionKey, loadPersistedSessionKey, clearPersistedSessionKey,
@@ -255,6 +257,18 @@ function deriveEvm(seed: string[], idx = 0): string {
       : HDNodeWallet.fromPhrase(seed.join(' '), undefined, `m/44'/60'/0'/0/${idx}`).address;
   } catch { return '0x0000000000000000000000000000000000000000'; }
 }
+/** 0x addresses of a wallet's accounts by index: a key wallet has its one; a
+ *  phrase wallet derives the account root once (one seed stretch) for every
+ *  index wanted, like OwnAccountPicker. Empty if the secret can't be read. */
+function deriveAccountAddrs(seed: string[], indices: number[]): Record<number, string> {
+  const out: Record<number, string> = {};
+  try {
+    if (isPrivateKeyWallet(seed)) { out[0] = new Wallet(seed[0].trim()).address; return out; }
+    const root = HDNodeWallet.fromPhrase(seed.join(' '), undefined, "m/44'/60'/0'/0");
+    for (const i of indices) out[i] = root.deriveChild(i).address;
+  } catch { /* leave the rows on "Loading address…" */ }
+  return out;
+}
 
 /* ──────────────────────── Token icon ──────────────────────── */
 
@@ -350,14 +364,36 @@ function TokenAvatar({ sym, color }: { sym: string; color: string }) {
 type OnboardStep = 'welcome' | 'create-warn' | 'create-show' | 'create-confirm' | 'create-pwd'
                  | 'import' | 'import-pwd' | 'unlock';
 
-function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (s: string[]) => void }) {
-  const [step, setStep] = useState<OnboardStep>(hasVault ? 'unlock' : 'welcome');
-  const [seed, setSeed] = useState<string[]>([]);
+/** How "Add wallet" starts (Wallets & accounts → Add wallet). */
+type AddWalletStart = 'create' | 'phrase' | 'key';
+/** Add-wallet mode: the same create (with the backup + verify steps) and
+ *  import steps, adding a wallet to the unlocked vault — no password step,
+ *  it's sealed with the vault's own key (lib/vault.ts addWallet). Same flow
+ *  as the phone's (apps/mobile/App.tsx AddWalletMode). */
+interface AddWalletMode {
+  start: AddWalletStart;
+  /** The wallet was added and lib/vault.ts has opened it. */
+  onAdded: (secret: string) => void;
+  onCancel: () => void;
+}
+
+function Onboarding({ hasVault, onComplete, addMode }: {
+  hasVault: boolean; onComplete: (s: string[]) => void; addMode?: AddWalletMode;
+}) {
+  const [step, setStep] = useState<OnboardStep>(
+    addMode ? (addMode.start === 'create' ? 'create-warn' : 'import') : hasVault ? 'unlock' : 'welcome',
+  );
   const [wordCount, setWordCount] = useState<12 | 24>(12);
+  const [seed, setSeed] = useState<string[]>(() => (addMode?.start === 'create' ? generateMnemonic(12) : []));
   const [importInput, setImportInput] = useState('');
   /** Import screen: recovery phrase or a single account's private key — an
    *  explicit choice, as on web and mobile (one shared box hid the key option). */
-  const [importMode, setImportMode] = useState<'phrase' | 'key'>('phrase');
+  const [importMode, setImportMode] = useState<'phrase' | 'key'>(addMode?.start === 'key' ? 'key' : 'phrase');
+  /** Back from the first step of add-wallet mode closes it. */
+  const backTo = (to: OnboardStep) => {
+    if (addMode && to === 'welcome') addMode.onCancel();
+    else setStep(to);
+  };
   /* Verify-phrase: only N indices missing, user fills them from a pool */
   const VERIFY_MISSING = 4;
   const [missingIdxs,  setMissingIdxs] = useState<number[]>([]);
@@ -435,40 +471,67 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
     try {
       const vault = await createVault(seed.join(' '), password);
       saveVault(vault);
-      selectWallet(parseWalletSet(seed.join(' '))); // a new vault holds one wallet
+      const w = selectWallet(parseWalletSet(seed.join(' '))); // a new vault holds one wallet
+      setWalletOrigin(w.id, 'created'); // labels it in Wallets & accounts
       setSeedBackedUp(true); // create flow includes seed verification
       const opened = await openVault(vault, password);
       if (opened) { cacheSessionKey(opened.key); void persistSessionKey(opened.key); }
       onComplete(seed);
     } finally { setBusy(false); }
   };
+  /** The secret on the import step, checked — null (after saying why) if it
+   *  can't be used. A raw 64-hex key (with or without 0x) imports one EVM
+   *  account. Inline errors — alert() in an MV3 popup opens an OS dialog that
+   *  visually detaches from the 360px popup and looks broken. */
+  const importSecret = (): string | null => {
+    const raw = importInput.trim();
+    if (/^(0x)?[0-9a-fA-F]{64}$/.test(raw)) {
+      const key = raw.startsWith('0x') ? raw : `0x${raw}`;
+      try { new Wallet(key); } catch { setFormErr('That private key could not be read.'); return null; }
+      return key;
+    }
+    const words = raw.toLowerCase().split(/\s+/);
+    if (![12, 15, 18, 21, 24].includes(words.length)) { setFormErr('Enter a 12/15/18/21/24-word phrase or a private key'); return null; }
+    if (!isValidMnemonic(words.join(' '))) { setFormErr('Invalid recovery phrase — check for typos'); return null; }
+    return words.join(' ');
+  };
   const finishImport = async () => {
     if (password !== password2 || pwProblem || busy) return;
-    const raw = importInput.trim();
-    // A raw 64-hex key (with or without 0x) imports one EVM account.
-    const isPk = /^(0x)?[0-9a-fA-F]{64}$/.test(raw);
-    // Inline errors — alert() in an MV3 popup opens an OS dialog that
-    // visually detaches from the 360px popup and looks broken.
-    let secret: string;
-    if (isPk) {
-      secret = raw.startsWith('0x') ? raw : `0x${raw}`;
-    } else {
-      const words = raw.toLowerCase().split(/\s+/);
-      if (![12, 15, 18, 21, 24].includes(words.length)) { setFormErr('Enter a 12/15/18/21/24-word phrase or a private key'); return; }
-      if (!isValidMnemonic(words.join(' '))) { setFormErr('Invalid recovery phrase — check for typos'); return; }
-      secret = words.join(' ');
-    }
+    const secret = importSecret();
+    if (!secret) return;
     setFormErr('');
     setBusy(true);
     try {
       const vault = await createVault(secret, password);
       saveVault(vault);
-      selectWallet(parseWalletSet(secret)); // a new vault holds one wallet
+      const w = selectWallet(parseWalletSet(secret)); // a new vault holds one wallet
+      setWalletOrigin(w.id, 'imported'); // labels it in Wallets & accounts
       setSeedBackedUp(true); // imported — user already holds the secret
       const opened = await openVault(vault, password);
       if (opened) { cacheSessionKey(opened.key); void persistSessionKey(opened.key); }
-      onComplete(isPk ? [secret] : secret.split(/\s+/));
+      onComplete(secret.split(/\s+/));
     } finally { setBusy(false); }
+  };
+
+  /* Add-wallet mode: the verified new phrase or the import goes into the
+     unlocked vault next to the other wallets (same password), and opens. */
+  const addingRef = useRef(false); // a double click lands before `busy` re-renders
+  const finishAdd = async (kind: 'create' | 'import') => {
+    if (!addMode || busy || addingRef.current) return;
+    const secret = kind === 'create' ? seed.join(' ') : importSecret();
+    if (!secret) return;
+    const key = getSessionKey();
+    if (!key) { setFormErr('The wallet is locked — unlock it and try again.'); return; }
+    addingRef.current = true;
+    setFormErr('');
+    setBusy(true);
+    try {
+      const r = await addWallet(key, secret, undefined, kind === 'create' ? 'created' : 'imported');
+      if ('error' in r) { setFormErr(r.error); return; }
+      addMode.onAdded(r.wallet.secret);
+    } catch {
+      setFormErr('Couldn’t add the wallet — nothing was changed.');
+    } finally { addingRef.current = false; setBusy(false); }
   };
   const tryUnlock = async () => {
     if (busy) return;
@@ -553,15 +616,19 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
         </>}
 
         {step === 'create-warn' && <>
-          <h1 className="onb-title">Save your phrase</h1>
-          <p className="onb-sub">{seed.length} words = your wallet's only backup. Anyone with them has full access.</p>
+          <h1 className="onb-title">{addMode ? 'New wallet' : 'Save your phrase'}</h1>
+          <p className="onb-sub">
+            {addMode
+              ? `A new recovery phrase — ${seed.length} words that are this wallet's only backup. Your other wallets and your password stay as they are.`
+              : `${seed.length} words = your wallet's only backup. Anyone with them has full access.`}
+          </p>
           <ul className="warn-list">
             <li>Write them down on paper</li>
             <li>Keep them safe and private</li>
             <li>Never share with anyone</li>
           </ul>
           <div className="row-btns">
-            <button className="btn-outline" onClick={() => setStep('welcome')}>Back</button>
+            <button className="btn-outline" onClick={() => backTo('welcome')}>{addMode ? 'Cancel' : 'Back'}</button>
             <button className="btn-primary" onClick={() => setStep('create-show')}>I understand</button>
           </div>
         </>}
@@ -637,9 +704,12 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
             ))}
           </div>
           {orderMismatch && <div className="onb-err">Order doesn't match. Tap slots to undo.</div>}
+          {addMode && formErr && <div className="onb-err">{formErr}</div>}
           <div className="row-btns">
             <button className="btn-outline" onClick={() => setStep('create-show')}>Back</button>
-            <button className="btn-primary" disabled={!allConfirmed} onClick={() => setStep('create-pwd')}>Continue</button>
+            {addMode
+              ? <button className="btn-primary" disabled={!allConfirmed || busy} onClick={() => void finishAdd('create')}>{busy ? 'Adding…' : 'Add wallet'}</button>
+              : <button className="btn-primary" disabled={!allConfirmed} onClick={() => setStep('create-pwd')}>Continue</button>}
           </div>
         </>}
 
@@ -660,8 +730,9 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
         </>}
 
         {step === 'import' && <>
-          <h1 className="onb-title">Import wallet</h1>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          <h1 className="onb-title">{addMode ? (importMode === 'key' ? 'Import private key' : 'Import recovery phrase') : 'Import wallet'}</h1>
+          {/* Add-wallet mode came from an explicit choice, so no toggle. */}
+          {!addMode && <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             {([['phrase', 'Recovery phrase'], ['key', 'Private key']] as const).map(([mode, label]) => (
               <button
                 key={mode}
@@ -671,7 +742,7 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
                 onClick={() => { setImportMode(mode); setImportInput(''); setFormErr(''); }}
               >{label}</button>
             ))}
-          </div>
+          </div>}
           <p className="onb-sub">
             {importMode === 'phrase'
               ? 'Paste your 12–24 word recovery phrase. It restores every account, plus Bitcoin, Solana and Cosmos.'
@@ -681,7 +752,7 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
             className="field field-textarea"
             placeholder={importMode === 'phrase' ? 'word1 word2 word3 …' : '0x…'}
             value={importInput}
-            onChange={e => setImportInput(e.target.value)}
+            onChange={e => { setImportInput(e.target.value); if (addMode) setFormErr(''); }}
             autoComplete="off" spellCheck={false}
           />
           {(() => {
@@ -696,9 +767,12 @@ function Onboarding({ hasVault, onComplete }: { hasVault: boolean; onComplete: (
                     ? (v === '' ? '' : isPk ? 'Private key — one EVM account' : 'Not a private key (64 hex characters)')
                     : `${wc} words`}
                 </div>
+                {addMode && formErr && <div className="onb-err">{formErr}</div>}
                 <div className="row-btns">
-                  <button className="btn-outline" onClick={() => setStep('welcome')}>Back</button>
-                  <button className="btn-primary" disabled={!ok} onClick={() => setStep('import-pwd')}>Continue</button>
+                  <button className="btn-outline" onClick={() => backTo('welcome')}>{addMode ? 'Cancel' : 'Back'}</button>
+                  {addMode
+                    ? <button className="btn-primary" disabled={!ok || busy} onClick={() => void finishAdd('import')}>{busy ? 'Adding…' : 'Add wallet'}</button>
+                    : <button className="btn-primary" disabled={!ok} onClick={() => setStep('import-pwd')}>Continue</button>}
                 </div>
               </>
             );
@@ -2798,24 +2872,18 @@ function AIAssistant() {
 }
 
 function HomeScreen({
-  onAction, onLock, onOpenSettings, onOpenToken,
-  activeIdx, onSwitch, onAdd, onRenameAccount, onDeleteAccount,
-  wallets, activeWalletId, onSwitchWallet,
+  onAction, onOpenSettings, onOpenToken, activeIdx, onOpenWallets, wallets, activeWalletId,
 }: {
   onAction:      (m: 'send'|'receive'|'swap') => void;
-  onLock:        () => void;
   onOpenSettings: () => void;
   onOpenToken:   (sym: string, chainId?: number) => void;
   activeIdx:     number;
-  onSwitch:      (idx: number) => void;
-  /** "+ Add": new account from this wallet, or import another wallet. */
-  onAdd:         () => void;
-  /** Every wallet in the vault; the switcher shows when there's more than one. */
+  /** The account chip opens Wallets & accounts (every wallet, its accounts,
+   *  add / rename / remove, and Lock). */
+  onOpenWallets: () => void;
+  /** Every wallet in the vault; the chip names the open one when there are several. */
   wallets:        WalletInfo[];
   activeWalletId: string;
-  onSwitchWallet: (id: string) => void;
-  onRenameAccount: (idx: number) => void;
-  onDeleteAccount: (idx: number) => void;
 }) {
   const { coins: allCoins, loading, offline, address } = usePortfolioCtx();
   // Networks/assets hidden in Settings never reach this list or the total —
@@ -2824,196 +2892,37 @@ function HomeScreen({
   const coins = useMemo(() => allCoins.filter(isCoinVisible), [allCoins]);
   const totalUsd = useMemo(() => coins.reduce((s, c) => s + c.usdValue, 0), [coins]);
   const [backedUp, setBackedUp] = useState<boolean | null>(null);
-  const [acctMenu, setAcctMenu] = useState(false);
+  // Re-read when the open wallet changes (HomeScreen is keyed by it in App).
   useEffect(() => { setBackedUp(isSeedBackedUp()); }, []);
   const holdings: Holding[] = useMemo(
     () => coins.filter(c => c.balance > 0 && c.usdValue > 0).map(c => ({ sym: c.sym, qty: c.balance, usd: c.usdValue })),
     [coins],
   );
-  // The switcher heads with the active account (name, litho1 address,
-  // rename/delete) and lists only the OTHER accounts to switch to (client
-  // 2026-10-15: the active account isn't repeated in its own switcher).
+  const walletName = wallets.length > 1 ? wallets.find(w => w.id === activeWalletId)?.name : undefined;
   const acctLitho = address ? lithoDisplayAddr(address, LITHO_MAINNET_ID) : '';
-  const visibleAccts = acctMenu ? getVisibleAccountIndices() : [];
-  const otherAccounts = visibleAccts.filter(i => i !== activeIdx);
-  // A wallet must keep one account, so the last one can't go. Rendered
-  // disabled rather than hidden — hiding it made the feature look absent
-  // to anyone with a single account.
-  const lastAccount = visibleAccts.length <= 1;
   return (
     <div className="screen">
       <div className="screen-header">
-        {/* Account chip + switcher menu. Tap = open switcher; the lock
-            action moves to the menu so a misclick doesn't lock the
-            wallet. */}
-        <div style={{ position: 'relative' }}>
-          <div className="acct-chip" onClick={() => setAcctMenu(v => !v)}>
-            <div className="acct-avatar"><User size={13}/></div>
-            <div>
-              <div className="acct-name" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAccountName(activeIdx)}</div>
-              <div className="acct-addr">
-                {offline ? 'Offline' : wallets.length > 1 ? (wallets.find(w => w.id === activeWalletId)?.name ?? 'Synced') : 'Synced'}
-              </div>
+        {/* Account chip — opens Wallets & accounts (every wallet and its
+            accounts, add / rename / remove; Lock is there too, so a misclick
+            here never locks the wallet). */}
+        <button
+          type="button"
+          className="acct-chip"
+          onClick={onOpenWallets}
+          title={acctLitho || undefined}
+          aria-label={`${getAccountName(activeIdx)}${walletName ? ` in ${walletName}` : ''} — wallets and accounts`}
+          style={{ color: 'inherit', font: 'inherit', textAlign: 'left' }}
+        >
+          <div className="acct-avatar"><User size={13}/></div>
+          <div>
+            <div className="acct-name" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAccountName(activeIdx)}</div>
+            <div className="acct-addr" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {offline ? 'Offline' : walletName ?? 'Synced'}
             </div>
           </div>
-          {acctMenu && (
-            <>
-              <div
-                onClick={() => setAcctMenu(false)}
-                style={{ position: 'fixed', inset: 0, zIndex: 10 }}
-              />
-              <div
-                style={{
-                  position: 'absolute', top: '100%', left: 0, marginTop: 6,
-                  zIndex: 11, minWidth: 180,
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 10, padding: 4,
-                  boxShadow: '0 10px 28px rgba(0,0,0,0.24)',
-                }}
-              >
-                {wallets.length > 1 && (
-                  <div style={{ borderBottom: '1px solid var(--border-default)', marginBottom: 4, paddingBottom: 4 }}>
-                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text-muted)', padding: '4px 10px 2px' }}>WALLETS</div>
-                    {wallets.map(w => (
-                      <button
-                        key={w.id}
-                        onClick={() => { if (w.id !== activeWalletId) onSwitchWallet(w.id); setAcctMenu(false); }}
-                        style={{
-                          display: 'flex', width: '100%', alignItems: 'center', gap: 8,
-                          padding: '7px 10px', border: 'none', borderRadius: 6,
-                          background: w.id === activeWalletId ? 'var(--bg-hover)' : 'transparent',
-                          color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left',
-                          fontSize: 12, fontWeight: w.id === activeWalletId ? 700 : 500,
-                        }}
-                      >
-                        <WalletIcon size={12}/>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
-                        <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{w.kind === 'key' ? 'key' : ''}</span>
-                        {w.id === activeWalletId && <span style={{ marginLeft: 'auto', color: 'var(--blue)' }}>●</span>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {/* Active account: name + litho1 address, with its own
-                    rename/delete (it isn't repeated in the list below). */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 6px 6px 10px' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {getAccountName(activeIdx)}
-                    </div>
-                    {acctLitho && (
-                      <div title={acctLitho} style={{ display: 'flex', alignItems: 'center', fontSize: 10, color: 'var(--text-muted)', fontFamily: "'Geist Mono', monospace", marginTop: 2 }}>
-                        {shortTxAddr(acctLitho)}
-                        <TxCopyBtn value={acctLitho} what="address"/>
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => { onRenameAccount(activeIdx); setAcctMenu(false); }}
-                    title="Rename account"
-                    aria-label={`Rename ${getAccountName(activeIdx)}`}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex' }}
-                  >
-                    <Pencil size={11}/>
-                  </button>
-                  <button
-                    onClick={() => { if (!lastAccount) { onDeleteAccount(activeIdx); setAcctMenu(false); } }}
-                    disabled={lastAccount}
-                    title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
-                    aria-label={`Delete ${getAccountName(activeIdx)}`}
-                    style={{
-                      background: 'none', border: 'none', padding: 3, display: 'flex',
-                      cursor: lastAccount ? 'not-allowed' : 'pointer',
-                      color: lastAccount ? 'var(--text-muted)' : '#f87171',
-                      opacity: lastAccount ? 0.45 : 1,
-                    }}
-                  >
-                    <Trash2 size={11}/>
-                  </button>
-                </div>
-                {otherAccounts.length > 0 && (
-                  <div style={{ borderTop: '1px solid var(--border-default)', marginTop: 4, paddingTop: 4 }}>
-                    {otherAccounts.map((i) => (
-                      <div
-                        key={i}
-                        style={{
-                          display: 'flex', width: '100%', alignItems: 'center', gap: 4,
-                          padding: '4px 6px', borderRadius: 6,
-                        }}
-                      >
-                        <button
-                          onClick={() => { onSwitch(i); setAcctMenu(false); }}
-                          style={{
-                            display: 'flex', flex: 1, alignItems: 'center', gap: 8, minWidth: 0,
-                            padding: '4px 4px', border: 'none', borderRadius: 6, background: 'transparent',
-                            color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left',
-                            fontSize: 12, fontWeight: 500,
-                          }}
-                        >
-                          <User size={12}/>
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {getAccountName(i)}
-                          </span>
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onRenameAccount(i); setAcctMenu(false); }}
-                          title="Rename account"
-                          aria-label={`Rename ${getAccountName(i)}`}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 3, display: 'flex' }}
-                        >
-                          <Pencil size={11}/>
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); if (!lastAccount) { onDeleteAccount(i); setAcctMenu(false); } }}
-                          disabled={lastAccount}
-                          title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
-                          aria-label={`Delete ${getAccountName(i)}`}
-                          style={{
-                            background: 'none', border: 'none', padding: 3, display: 'flex',
-                            cursor: lastAccount ? 'not-allowed' : 'pointer',
-                            color: lastAccount ? 'var(--text-muted)' : '#f87171',
-                            opacity: lastAccount ? 0.45 : 1,
-                          }}
-                        >
-                          <Trash2 size={11}/>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  onClick={() => { onAdd(); setAcctMenu(false); }}
-                  style={{
-                    display: 'flex', width: '100%', alignItems: 'center', gap: 8,
-                    padding: '8px 10px', border: 'none', borderRadius: 6,
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    cursor: 'pointer', textAlign: 'left',
-                    fontSize: 12,
-                    borderTop: '1px solid var(--border-default)',
-                    marginTop: 4, paddingTop: 10,
-                  }}
-                >
-                  + Add account or wallet
-                </button>
-                <button
-                  onClick={() => { onLock(); setAcctMenu(false); }}
-                  style={{
-                    display: 'flex', width: '100%', alignItems: 'center', gap: 8,
-                    padding: '8px 10px', border: 'none', borderRadius: 6,
-                    background: 'transparent', color: 'var(--red)',
-                    cursor: 'pointer', textAlign: 'left', fontSize: 12,
-                    borderTop: '1px solid var(--border-default)',
-                    marginTop: 4, paddingTop: 10,
-                  }}
-                >
-                  Lock wallet
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+          <ChevronDown size={13} style={{ color: 'var(--text-muted)', marginLeft: -2 }}/>
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           {/* Dock as a side panel (MetaMask-style) — falls back to a full
               browser tab on Firefox/Safari. Hidden when already docked/expanded. */}
@@ -3374,8 +3283,13 @@ function CustomAssetsSection() {
 function SettingsScreen({
   isDark, onToggleTheme, onLock, onOpenWalletConnect, onOpenAddressBook, onOpenPermissions,
   address, accountName, onOpenChangePassword, onOpenRecoveryPhrase, onDeleteWallet, onOpenManageNetworks,
+  onOpenWallets, walletCount, openWalletName,
 }: {
   onDeleteWallet: () => void;
+  /** Manage wallets — the same Wallets & accounts sheet as the account chip. */
+  onOpenWallets: () => void;
+  walletCount: number;
+  openWalletName?: string;
   isDark: boolean;
   onToggleTheme: () => void;
   onLock: () => void;
@@ -3437,6 +3351,22 @@ function SettingsScreen({
           <div className="acct-header-addr" title={address}>{address ? `${address.slice(0, hiPrefixLen(address) + 6)}…${address.slice(-5)}` : '—'}</div>
         </div>
         <button className="copy-chip" onClick={copyAddr} disabled={!address}>{copiedAddr ? 'Copied' : 'Copy'}</button>
+      </div>
+
+      <SectionHead Icon={WalletIcon} title="Wallets" sub="Several recovery phrases or keys in one wallet"/>
+      <div className="card list">
+        <button className="set-row" onClick={onOpenWallets} style={{ width: '100%', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer' }}>
+          <div className="set-icon"><WalletIcon size={15}/></div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="set-label">Manage wallets</div>
+            <div className="set-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {walletCount > 1 && openWalletName
+                ? `${walletCount} wallets · open: ${openWalletName}`
+                : 'Add, import, switch, rename or remove wallets'}
+            </div>
+          </div>
+          <ChevronRight size={15} color="var(--text-muted)"/>
+        </button>
       </div>
 
       <SectionHead Icon={Globe} title="General" sub="Display and locale"/>
@@ -5411,97 +5341,326 @@ interface PendingRpcRequest {
   address: string;
 }
 
-/** "+ Add" from the account menu: another account from the open wallet's
- *  recovery phrase, or import a different wallet (phrase or private key) that
- *  is kept alongside it in the same vault (lib/vault.ts addWallet). */
-function AddWalletModal({ walletName, accountBlock, walletsFull, onNewAccount, onImported, onClose }: {
-  walletName: string;
-  /** Why "New account" isn't possible, or null when it is. */
-  accountBlock: string | null;
-  walletsFull: boolean;
-  onNewAccount: () => void;
-  onImported: (secret: string) => void;
+/* ──────────────────────── Wallets & accounts ────────────────────────
+   The account chip's sheet (and Settings → Manage wallets) — same model as
+   the phone (apps/mobile/App.tsx, client 2026-10-17): every wallet in the
+   vault as a card with its accounts nested under it, in sections by how the
+   wallet came in. Tapping any account opens that wallet on that account in
+   one step; "+ Add account" sits under every recovery-phrase wallet; "Add
+   wallet" creates a new phrase or imports one / a private key — whatever
+   the open wallet is (a private-key wallet included). */
+type WalletGroupKey = 'created' | 'phrase' | 'imported' | 'key';
+const WALLET_GROUPS: ReadonlyArray<{ key: WalletGroupKey; title: string; label: string }> = [
+  { key: 'created',  title: 'Created in Thanos',          label: 'Created' },
+  { key: 'phrase',   title: 'Recovery phrase',            label: 'Recovery phrase' },
+  { key: 'imported', title: 'Imported · recovery phrase', label: 'Imported phrase' },
+  { key: 'key',      title: 'Imported · private key',     label: 'Private key' },
+];
+/** A phrase wallet whose origin was never recorded (an existing install's
+ *  first wallet) can't be placed, so it sits under "Recovery phrase". */
+function walletGroupOf(w: WalletInfo): WalletGroupKey {
+  return w.kind === 'key' ? 'key' : (getWalletOrigin(w.id) ?? 'phrase');
+}
+const walletGroupLabel = (g: WalletGroupKey): string => WALLET_GROUPS.find(x => x.key === g)?.label ?? '';
+
+type RenameTarget = { kind: 'wallet'; id: string } | { kind: 'account'; idx: number };
+
+function WalletsSheet({
+  wallets, openId, seed, activeIdx, evmAddr, busy, note, tick, covered,
+  onClose, onOpenAccount, onAddAccount, onRenameAccount, onDeleteAccount,
+  onRenameWallet, onRemoveWallet, onAddWallet, onLock,
+}: {
+  /** The add-wallet flow is on top — keys belong to it, not the sheet. */
+  covered?: boolean;
+  wallets: WalletInfo[];
+  /** The open wallet — its secret is `seed`. */
+  openId: string;
+  seed: string[];
+  activeIdx: number;
+  /** The open account's address (live). */
+  evmAddr: string;
+  busy: boolean;
+  /** A status or error line (a balance check, a refused action). */
+  note: string | null;
+  /** Bumped by App whenever account names or lists change. */
+  tick: number;
   onClose: () => void;
+  onOpenAccount: (walletId: string, idx: number) => void;
+  onAddAccount: (walletId: string) => void;
+  onRenameAccount: (idx: number, name: string) => void;
+  onDeleteAccount: (idx: number) => void;
+  onRenameWallet: (walletId: string, name: string) => void;
+  onRemoveWallet: (walletId: string) => void;
+  onAddWallet: (start: AddWalletStart) => void;
+  onLock: () => void;
 }) {
-  const [view, setView] = useState<'choose' | 'import'>('choose');
-  const [mode, setMode] = useState<'phrase' | 'key'>('phrase');
-  const [input, setInput] = useState('');
-  const [name, setName] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<'list' | 'add'>('list');
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [rename, setRename] = useState<RenameTarget | null>(null);
+  const [draft, setDraft] = useState('');
+  const [, setAddrTick] = useState(0);
 
-  const v = input.trim();
-  const words = v.toLowerCase().split(/\s+/).filter(Boolean);
-  const isPk = /^(0x)?[0-9a-fA-F]{64}$/.test(v);
-  const ready = mode === 'key' ? isPk : [12, 15, 18, 21, 24].includes(words.length);
+  const pkOpen = isPrivateKeyWallet(seed);
+  // A vault that couldn't be listed still shows the open wallet.
+  const list: WalletInfo[] = wallets.length ? wallets : [{ id: openId, name: 'Wallet 1', kind: pkOpen ? 'key' : 'phrase' }];
+  const listKey = list.map(w => `${w.id}:${w.kind}`).join(',');
+  // Every wallet's accounts from its own stored settings; the open wallet's
+  // active one from App state, and a private key has just its one.
+  const accounts = useMemo(() => {
+    const out: Record<string, WalletAccounts> = {};
+    for (const w of list) {
+      const a = readWalletAccounts(w.id);
+      out[w.id] = w.kind === 'key' ? { ...a, active: 0, visible: [0] } : w.id === openId ? { ...a, active: activeIdx } : a;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- listKey stands for `list`
+  }, [listKey, openId, activeIdx, tick]);
+  const wantKey = list.map(w => `${w.id}:${accounts[w.id]?.visible.join('.')}`).join(',');
 
-  const submit = async () => {
-    if (!ready || busy) return;
-    if (mode === 'phrase' && !isValidMnemonic(words.join(' '))) { setErr('Invalid recovery phrase — check for typos.'); return; }
-    const key = getSessionKey();
-    if (!key) { setErr('The wallet is locked — unlock it and try again.'); return; }
-    setBusy(true); setErr('');
-    try {
-      const r = await addWallet(key, mode === 'key' ? v : words.join(' '), name);
-      if ('error' in r) { setErr(r.error); return; }
-      onImported(r.wallet.secret);
-    } catch { setErr('Could not add the wallet.'); }
-    finally { setBusy(false); }
+  /* Account addresses come from the public cache (thanos.wallet_meta); any
+     still missing are derived once the sheet is up — the open wallet from
+     its unlocked secret, every other wallet from the vault, one wallet at a
+     time — and their rows say "Loading address…" until theirs land. */
+  useEffect(() => {
+    let cancel = false;
+    const wanted = (w: WalletInfo) => (w.kind === 'key' ? [0] : accounts[w.id]?.visible ?? [0]);
+    const missing = list.filter(w => wanted(w).some(i => !getWalletAddresses(w.id)[i]));
+    if (!missing.length) return;
+    void (async () => {
+      for (const w of missing) {
+        await new Promise(r => setTimeout(r, 30)); // let the sheet paint between wallets
+        if (cancel) return;
+        const secret = w.id === openId ? seed.join(' ') : await readWalletSecret(getSessionKey(), w.id);
+        if (!secret || cancel) continue;
+        const known = getWalletAddresses(w.id);
+        setWalletAddresses(w.id, deriveAccountAddrs(secret.split(' '), wanted(w).filter(i => !known[i])));
+        setAddrTick(t => t + 1);
+      }
+    })();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wantKey stands for list + accounts
+  }, [wantKey, openId, seed]);
+
+  // Esc closes the innermost layer: the rename dialog, a wallet menu, the add page, the sheet.
+  useEffect(() => {
+    if (covered) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (rename) setRename(null);
+      else if (menuFor) setMenuFor(null);
+      else if (view === 'add') setView('list');
+      else onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [rename, menuFor, view, onClose, covered]);
+
+  const startRename = (t: RenameTarget) => {
+    setMenuFor(null);
+    setDraft(t.kind === 'wallet' ? (list.find(w => w.id === t.id)?.name ?? '') : (getCustomAccountName(t.idx) ?? ''));
+    setRename(t);
+  };
+  const saveRename = () => {
+    if (!rename) return;
+    if (rename.kind === 'wallet') {
+      if (!draft.trim()) return;
+      onRenameWallet(rename.id, draft);
+    } else {
+      onRenameAccount(rename.idx, draft);
+    }
+    setRename(null);
   };
 
-  const option = (title: string, sub: string, onClick: () => void, disabled: boolean) => (
-    <button
-      type="button" onClick={onClick} disabled={disabled}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, width: '100%',
-        padding: '12px 14px', borderRadius: 12, textAlign: 'left',
-        background: 'var(--bg-elevated)', border: '1px solid var(--border-default)',
-        color: 'var(--text-primary)', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      <span style={{ fontSize: 13, fontWeight: 700 }}>{title}</span>
-      <span style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.45 }}>{sub}</span>
-    </button>
-  );
+  const renderWallet = (w: WalletInfo) => {
+    const open = w.id === openId;
+    const pk = w.kind === 'key';
+    const group = walletGroupOf(w);
+    const info = accounts[w.id];
+    const cached = getWalletAddresses(w.id);
+    // Its active account first, listed once; then the rest in order.
+    const rows = pk ? [0] : [info.active, ...info.visible.filter(i => i !== info.active)];
+    const n = pk ? 1 : info.visible.length;
+    // A wallet must keep one account — delete is dimmed on the last.
+    const lastAccount = info.visible.length <= 1;
+    return (
+      <div key={w.id} className={`ws-card${open ? ' open' : ''}`}>
+        <div className="ws-wallet">
+          <button
+            type="button" className="ws-wallet-main" disabled={busy}
+            onClick={() => { if (!open) onOpenAccount(w.id, info.active); }}
+            aria-label={`${w.name}, ${walletGroupLabel(group)}${open ? ', open' : ''}`}
+            aria-current={open ? 'true' : undefined}
+          >
+            <span className={`ws-wicon${pk ? ' key' : ''}`}>{pk ? <KeyRound size={15}/> : <WalletIcon size={15}/>}</span>
+            <span className="ws-wmeta">
+              <span className="ws-wname">{w.name}</span>
+              <span className="ws-wsub">
+                <span className={`ws-badge ws-badge-${group}`}>{walletGroupLabel(group)}</span>
+                <span>{n} {n === 1 ? 'account' : 'accounts'}</span>
+              </span>
+            </span>
+          </button>
+          <button
+            type="button" className="ws-ibtn" disabled={busy}
+            aria-label={`${w.name} options`} aria-haspopup="menu" aria-expanded={menuFor === w.id}
+            onClick={() => setMenuFor(m => (m === w.id ? null : w.id))}
+          >
+            <Ellipsis size={16}/>
+          </button>
+          {menuFor === w.id && <>
+            <div className="ws-menu-scrim" onClick={() => setMenuFor(null)}/>
+            <div className="ws-menu" role="menu">
+              {list.length > 1 && (
+                <button type="button" role="menuitem" onClick={() => startRename({ kind: 'wallet', id: w.id })}>
+                  <Pencil size={13}/> Rename
+                </button>
+              )}
+              {/* The last wallet's Remove is Settings → Delete wallet (erase). */}
+              <button type="button" role="menuitem" className="danger" onClick={() => { setMenuFor(null); onRemoveWallet(w.id); }}>
+                <Trash2 size={13}/> {list.length > 1 ? 'Remove wallet' : 'Delete wallet'}
+              </button>
+            </div>
+          </>}
+        </div>
 
+        {rows.map((i) => {
+          const on = open && i === info.active;
+          const a = on && evmAddr ? evmAddr : cached[i];
+          const shown = a ? lithoDisplayAddr(a, LITHO_MAINNET_ID) : '';
+          const name = info.names[i] || `Account ${i + 1}`;
+          return (
+            <div key={i} className={`ws-acct${on ? ' on' : ''}`}>
+              <button
+                type="button" className="ws-acct-main" disabled={busy}
+                onClick={() => onOpenAccount(w.id, i)}
+                aria-label={on ? `${name} (active)` : `Open ${name} in ${w.name}`}
+                aria-current={on ? 'true' : undefined}
+              >
+                <span className="ws-aicon"><User size={13}/></span>
+                <span className="ws-ameta">
+                  <span className="ws-aname">{name}</span>
+                  {shown
+                    ? <span className="ws-aaddr" title={shown}>{shortTxAddr(shown)}</span>
+                    : <span className="ws-aaddr loading">Loading address…</span>}
+                </span>
+                {on && <Check size={15} className="ws-check" aria-hidden="true"/>}
+              </button>
+              {on && shown && <TxCopyBtn value={shown} what="address"/>}
+              {open && (
+                <button type="button" className="ws-ibtn" disabled={busy} title="Rename account" aria-label={`Rename ${name}`}
+                  onClick={() => startRename({ kind: 'account', idx: i })}>
+                  <Pencil size={13}/>
+                </button>
+              )}
+              {open && !pk && (
+                <button type="button" className="ws-ibtn danger" disabled={busy || lastAccount}
+                  title={lastAccount ? 'Your wallet must keep at least one account' : 'Delete account'}
+                  aria-label={`Delete ${name}`}
+                  onClick={() => onDeleteAccount(i)}>
+                  <Trash2 size={13}/>
+                </button>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Under every recovery-phrase wallet, open or not: its next derived
+            account, opened. A private key has just the one. */}
+        {!pk && info.count < MAX_ACCOUNTS && (
+          <button type="button" className="ws-add-acct" disabled={busy} onClick={() => onAddAccount(w.id)}
+            aria-label={`Add an account to ${w.name}`}>
+            <Plus size={14}/> Add account
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const full = list.length >= MAX_WALLETS;
   return (
-    <Modal title={view === 'choose' ? 'Add' : 'Import a wallet'} onClose={view === 'choose' ? onClose : () => { setView('choose'); setErr(''); }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 16px' }}>
-        {view === 'choose' ? <>
-          {option('New account', accountBlock ?? `Another account from ${walletName}’s recovery phrase — same backup, new address.`, onNewAccount, accountBlock !== null)}
-          {option('Import a wallet', walletsFull
-            ? `Thanos holds up to ${MAX_WALLETS} wallets.`
-            : 'Add a different recovery phrase or private key. Your current wallet stays — switch between them from this menu.',
-            () => setView('import'), walletsFull)}
-        </> : <>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {([['phrase', 'Recovery phrase'], ['key', 'Private key']] as const).map(([m, label]) => (
-              <button key={m} type="button"
-                className={mode === m ? 'btn-primary' : 'btn-outline'}
-                style={{ flex: 1, padding: '8px 10px', fontSize: 12 }}
-                onClick={() => { setMode(m); setInput(''); setErr(''); }}
-              >{label}</button>
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal ws-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="ws-title">
+        <div className="modal-header">
+          <button type="button" className="modal-back-btn" onClick={view === 'add' ? () => setView('list') : onClose}
+            aria-label={view === 'add' ? 'Back to wallets and accounts' : 'Close'}>
+            <ChevronLeft size={18}/>
+          </button>
+          <span className="modal-title" id="ws-title">{view === 'add' ? 'Add wallet' : 'Wallets & accounts'}</span>
+          <span className="ws-busy" aria-live="polite">{busy ? 'Working…' : ''}</span>
+        </div>
+
+        {view === 'list' ? <>
+          <div className="modal-body ws-body">
+            {note && <div className="ws-note" role="status">{note}</div>}
+            {WALLET_GROUPS.map((g) => {
+              const inGroup = list.filter(w => walletGroupOf(w) === g.key);
+              if (!inGroup.length) return null;
+              return (
+                <section key={g.key} className="ws-section" aria-label={g.title}>
+                  <div className="ws-section-title">{g.title}</div>
+                  {inGroup.map(renderWallet)}
+                </section>
+              );
+            })}
+          </div>
+          <div className="ws-footer">
+            <button type="button" className="ws-add-wallet" disabled={busy} onClick={() => setView('add')}>
+              <Plus size={15}/> Add wallet
+            </button>
+            <button type="button" className="ws-lock" onClick={onLock}>
+              <Lock size={13}/> Lock wallet
+            </button>
+          </div>
+        </> : (
+          <div className="modal-body ws-body">
+            <p className="ws-add-intro">
+              Your current wallets stay — switch between them here. Each wallet has its own recovery phrase (or key) and accounts, and your password stays the same.
+            </p>
+            {full && <div className="ws-note" role="status">Thanos holds up to {MAX_WALLETS} wallets. Remove one to add another.</div>}
+            {([
+              { start: 'create', title: 'Create new wallet',      sub: 'A new recovery phrase to write down and verify', Icon: Sparkles },
+              { start: 'phrase', title: 'Import recovery phrase', sub: '12–24 words · the full multi-chain wallet',      Icon: Key },
+              { start: 'key',    title: 'Import private key',     sub: 'One EVM account · no Bitcoin, Solana or Cosmos', Icon: KeyRound },
+            ] as const).map((o) => (
+              <button key={o.start} type="button" className="ws-opt" disabled={full || busy} onClick={() => onAddWallet(o.start)}>
+                <span className="ws-opt-icon"><o.Icon size={16}/></span>
+                <span className="ws-opt-text">
+                  <span className="ws-opt-title">{o.title}</span>
+                  <span className="ws-opt-sub">{o.sub}</span>
+                </span>
+                <ChevronRight size={16} className="ws-opt-chev"/>
+              </button>
             ))}
           </div>
-          <textarea
-            className="field field-textarea"
-            placeholder={mode === 'phrase' ? 'word1 word2 word3 …' : '0x…'}
-            value={input} onChange={e => setInput(e.target.value)}
-            autoComplete="off" spellCheck={false}
-          />
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {mode === 'key'
-              ? (v === '' ? 'One EVM account (64 hex characters).' : isPk ? 'Private key — one EVM account' : 'Not a private key (64 hex characters)')
-              : `${words.length} words`}
+        )}
+
+        {/* Rename a wallet or an account — in the sheet, not a browser prompt. */}
+        {rename && (
+          <div className="ws-dialog-back" onClick={() => setRename(null)}>
+            <div className="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="ws-rename-title" onClick={e => e.stopPropagation()}>
+              <div className="ws-dialog-title" id="ws-rename-title">{rename.kind === 'wallet' ? 'Rename wallet' : 'Rename account'}</div>
+              <div className="ws-dialog-sub">
+                {rename.kind === 'wallet'
+                  ? 'Shown in this list and under the account name.'
+                  : `Shown in place of “Account ${rename.idx + 1}”. Leave empty to reset.`}
+              </div>
+              <input
+                className="field" autoFocus value={draft}
+                maxLength={rename.kind === 'wallet' ? MAX_WALLET_NAME_LEN : MAX_ACCOUNT_NAME_LEN}
+                placeholder={rename.kind === 'wallet' ? 'Wallet name' : `Account ${rename.idx + 1}`}
+                aria-label={rename.kind === 'wallet' ? 'Wallet name' : 'Account name'}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') saveRename(); }}
+              />
+              <div className="row-btns">
+                <button type="button" className="btn-outline" onClick={() => setRename(null)}>Cancel</button>
+                <button type="button" className="btn-primary" disabled={rename.kind === 'wallet' && !draft.trim()} onClick={saveRename}>Save</button>
+              </div>
+            </div>
           </div>
-          <input className="field" placeholder="Wallet name (optional)" value={name} maxLength={24} onChange={e => setName(e.target.value)}/>
-          {err && <div style={{ color: '#f87171', fontSize: 12 }}>{err}</div>}
-          <button className="btn-primary" disabled={!ready || busy} onClick={() => void submit()}>
-            {busy ? 'Adding…' : 'Add wallet'}
-          </button>
-        </>}
+        )}
       </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -5612,45 +5771,185 @@ function App() {
      signing seed, and the evmAddr effect below tells the background (dApps
      get accountsChanged). The session key re-encrypts the vault on add/remove. */
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
+  // The open wallet — only ever set together with `seed` (its secret), from
+  // lib/vault.ts's current wallet at that moment, so the two never disagree.
   const [activeWalletId, setActiveWalletId] = useState('');
-  const [addOpen, setAddOpen] = useState(false);
   const refreshWallets = async () => {
     const key = getSessionKey();
     const r = key ? await listWallets(key) : null;
-    if (r) { setWallets(r.wallets); setActiveWalletId(r.activeId); }
+    if (r) setWallets(r.wallets);
   };
   useEffect(() => { if (unlocked) void refreshWallets(); }, [unlocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Show the wallet lib/vault.ts has just opened. */
   const openWalletSecret = (secret: string) => {
     const words = secret.split(' ');
     const pk = isPrivateKeyWallet(words);
     setSeed(words);
+    setActiveWalletId(getCurrentWalletId());
     setActiveIdx(pk ? 0 : getActiveAccountIndex());
     setAccountCountState(pk ? 1 : getAccountCount());
   };
-  const switchToWallet = async (id: string) => {
-    const key = getSessionKey();
-    const w = key ? await switchWallet(key, id) : null;
-    if (!w) return;
-    openWalletSecret(w.secret);
-    await refreshWallets();
-  };
   const activeWallet = wallets.find(w => w.id === activeWalletId);
+  const openId = activeWalletId || getCurrentWalletId();
+
+  // Cache the open account's address (public, no secret) so Wallets &
+  // accounts lists it whichever wallet is open later. Keyed by activeWalletId,
+  // which changes together with `seed` — never another wallet's id.
+  useEffect(() => {
+    if (!unlocked || !evmAddr || !activeWalletId || /^0x0{40}$/.test(evmAddr)) return;
+    setWalletAddresses(activeWalletId, { [pkWallet ? 0 : activeIdx]: evmAddr });
+  }, [unlocked, evmAddr, activeWalletId, activeIdx, pkWallet]);
+
+  /* ─── Wallets & accounts sheet ───────────────────────────────────────── */
+  const [walletsOpen, setWalletsOpen] = useState(false);
+  /** Add wallet in progress: the onboarding create / import steps in add mode. */
+  const [addStart, setAddStart] = useState<AddWalletStart | null>(null);
+  const [walletBusy, setWalletBusy] = useState(false);
+  const openWallets = () => { setAcctMsg(null); setWalletsOpen(true); };
+  const LOCKED_MSG = 'The wallet is locked — unlock it and try again.';
+
+  /** Open account `idx` of any wallet in one step (in the open wallet it's a
+   *  plain account switch). */
+  const openAccountIn = async (id: string, idx: number) => {
+    if (walletBusy) return;
+    setAcctMsg(null);
+    if (id === openId) {
+      if (!pkWallet) switchAccount(idx);
+      setWalletsOpen(false);
+      return;
+    }
+    const key = getSessionKey();
+    if (!key) { setAcctMsg(LOCKED_MSG); return; }
+    setWalletBusy(true);
+    try {
+      const w = await openAccount(key, id, idx);
+      if (!w) { setAcctMsg('Couldn’t open that wallet — lock and unlock Thanos, then try again.'); return; }
+      openWalletSecret(w.secret);
+      setWalletsOpen(false);
+      await refreshWallets();
+    } finally { setWalletBusy(false); }
+  };
+
+  /** "+ Add account" under any recovery-phrase wallet: its next derived
+   *  account, opened. */
+  const addAccountIn = async (id: string) => {
+    if (walletBusy) return;
+    setAcctMsg(null);
+    if (id === openId) {
+      if (pkWallet) { setAcctMsg('This wallet was imported from a private key, so it has just the one account.'); return; }
+      if (accountCount >= MAX_ACCOUNTS) { setAcctMsg(`A wallet holds up to ${MAX_ACCOUNTS} accounts.`); return; }
+      addAccount();
+      setWalletsOpen(false);
+      return;
+    }
+    const key = getSessionKey();
+    if (!key) { setAcctMsg(LOCKED_MSG); return; }
+    setWalletBusy(true);
+    try {
+      const r = await addAccountToWallet(key, id);
+      if ('error' in r) { setAcctMsg(r.error); return; }
+      openWalletSecret(r.wallet.secret);
+      setWalletsOpen(false);
+      await refreshWallets();
+    } finally { setWalletBusy(false); }
+  };
+
+  const renameWalletIn = async (id: string, name: string) => {
+    const key = getSessionKey();
+    if (!key) { setAcctMsg(LOCKED_MSG); return; }
+    setWalletBusy(true);
+    try {
+      if (await renameWallet(key, id, name)) await refreshWallets();
+      else setAcctMsg('Couldn’t rename the wallet — try again.');
+    } finally { setWalletBusy(false); }
+  };
+
+  /** Every listed address of a wallet — the open one from its secret in
+   *  memory; another from the address cache, derived from the vault only if
+   *  some are missing. */
+  const walletAddressesOf = async (w: WalletInfo): Promise<string[]> => {
+    const want = w.kind === 'key' ? [0] : readWalletAccounts(w.id).visible;
+    if (w.id === openId) return Object.values(deriveAccountAddrs(seed, want));
+    const known = getWalletAddresses(w.id);
+    if (want.every(i => known[i])) return want.map(i => known[i]);
+    const secret = await readWalletSecret(getSessionKey(), w.id);
+    if (!secret) return [];
+    const derived = deriveAccountAddrs(secret.split(' '), want);
+    setWalletAddresses(w.id, derived);
+    return Object.values(derived);
+  };
+
+  /* Remove a wallet from the sheet. The last one goes through Settings →
+     Delete wallet (erase, with its backup check). Funds don't block it, as
+     with accounts: what it holds is checked first, and the user is reminded
+     that only its recovery phrase (or key) reaches the funds afterwards. */
+  const confirmRemoveWallet = async (id: string) => {
+    if (walletBusy) return;
+    setAcctMsg(null);
+    // From the vault itself: the last wallet's Remove is the full erase.
+    const sessionKey = getSessionKey();
+    const all = (sessionKey ? (await listWallets(sessionKey))?.wallets : undefined) ?? wallets;
+    if (all.length <= 1) { await deleteWallet(); return; }
+    const w = all.find(x => x.id === id);
+    if (!w) return;
+    setWalletBusy(true);
+    setAcctMsg('Checking balance…');
+    let usd: number | null = null;
+    let threshold = 1;
+    const backedUp = isSeedBackedUp(id);
+    try {
+      const m = await import('../../lib/account-balance');
+      threshold = m.DELETE_MAX_USD;
+      const addrs = await walletAddressesOf(w);
+      const vals = addrs.length ? await Promise.all(addrs.map(a => m.accountUsdValue(a))) : [null];
+      usd = vals.some(v => v == null) ? null : vals.reduce<number>((s, v) => s + (v ?? 0), 0);
+    } catch { usd = null; } finally { setWalletBusy(false); setAcctMsg(null); }
+
+    const label = `“${w.name}”`;
+    const noun = w.kind === 'key' ? 'private key' : 'recovery phrase';
+    const held = usd == null
+      ? 'We couldn’t check what this wallet holds.'
+      : usd > threshold
+        ? `It holds about ${withCurrencyAffix(convertFromUsd(usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}.`
+        : null;
+    const body = held
+      ? `Remove ${label}?\n\n${backedUp ? '' : `You have NOT backed up ${label}'s ${noun}. `}${held} Removing it only takes it off this browser — any funds stay at its address on the blockchain, and only its ${noun} can get them back.\n\nMake sure its ${noun} is written down before you continue.`
+      : backedUp
+        ? `Remove ${label} from this browser?\n\nYou can restore it later with its ${noun}. Your other wallets stay.`
+        : `You have NOT backed up ${label}'s ${noun}.\n\nIf you remove it now, its funds are gone permanently — nobody can recover them.`;
+    if (!window.confirm(body)) return;
+    if (!window.confirm('Are you sure? This cannot be undone.')) return;
+
+    const key = getSessionKey();
+    if (!key) { setAcctMsg(LOCKED_MSG); return; }
+    setWalletBusy(true);
+    try {
+      const r = await removeWallet(key, id);
+      if ('error' in r) { setAcctMsg(r.error); return; }
+      if (id === openId) openWalletSecret(r.next.secret);
+      await refreshWallets();
+    } finally { setWalletBusy(false); }
+  };
+
+  /** The add-wallet flow added a wallet and lib/vault.ts opened it. */
+  const onWalletAdded = (secret: string) => {
+    openWalletSecret(secret);
+    setAddStart(null);
+    setWalletsOpen(false);
+    void refreshWallets();
+  };
 
   /* ─── Rename / delete account ─────────────────────────────────────────
      Removal hides the HD index (lib/vault.ts hideAccount) so no address ever
      shifts. An account holding over $1 (or whose balance can't be checked)
-     can still go, after a reminder about the recovery phrase. The popup has no modal
-     system for this, so rename uses a compact inline prompt row and delete
-     surfaces its outcome in acctMsg. */
+     can still go, after a reminder about the recovery phrase. Rename is a
+     small dialog in Wallets & accounts; delete surfaces its outcome in
+     acctMsg, shown there. */
   const [acctMsg, setAcctMsg] = useState<string | null>(null);
   const [nameTick, setNameTick] = useState(0);
 
-  const renameAccount = (idx: number) => {
-    const current = getCustomAccountName(idx) ?? '';
-    // eslint-disable-next-line no-alert
-    const next = window.prompt(`Rename ${getAccountName(idx)}`, current);
-    if (next == null) return;               // cancelled
-    setAccountName(idx, next);
+  const saveAccountName = (idx: number, name: string) => {
+    setAccountName(idx, name);
     setNameTick(t => t + 1);
   };
 
@@ -5660,17 +5959,22 @@ function App() {
      deserves to know that BEFORE the destructive click. */
   const deleteWallet = async () => {
     const backedUp = isSeedBackedUp();
-    const others = wallets.filter(w => w.id !== activeWalletId);
-    const label = others.length && activeWallet ? `“${activeWallet.name}”` : 'this wallet';
+    // Whether other wallets stay is read from the vault itself, not the list
+    // in memory (it may not have loaded yet) — erasing must never take
+    // wallets the user didn't mean to delete.
+    const key = getSessionKey();
+    const all = (key ? (await listWallets(key))?.wallets : undefined) ?? wallets;
+    const others = all.filter(w => w.id !== openId);
+    const me = all.find(w => w.id === openId);
+    const label = others.length && me ? `“${me.name}”` : 'this wallet';
     const first = backedUp
-      ? `Delete ${label} from this browser?\n\nYou can restore it later with its recovery phrase${activeWallet?.kind === 'key' ? ' or private key' : ''}.`
+      ? `Delete ${label} from this browser?\n\nYou can restore it later with its recovery phrase${me?.kind === 'key' ? ' or private key' : ''}.`
       : `You have NOT backed up ${label}'s recovery phrase.\n\nIf you delete it now, its funds are gone permanently — nobody can recover them.`;
     if (!window.confirm(first)) return;
     if (!window.confirm('Are you sure? This cannot be undone.')) return;
     // Other wallets stay: remove only this one and open the next.
     if (others.length) {
-      const key = getSessionKey();
-      const r = key ? await removeWallet(key, activeWalletId) : { error: 'The wallet is locked — unlock it and try again.' };
+      const r = key ? await removeWallet(key, openId) : { error: 'The wallet is locked — unlock it and try again.' };
       if ('error' in r) { setAcctMsg(r.error); return; }
       openWalletSecret(r.next.secret);
       await refreshWallets();
@@ -5681,6 +5985,9 @@ function App() {
     void clearPersistedSessionKey();
     void forgetQuanttSession().catch(() => { /* nothing to forget */ });
     setSeed([]);
+    setActiveWalletId('');
+    setWallets([]);
+    setWalletsOpen(false);
     setUnlocked(false);
     setHasVault(false);
   };
@@ -5809,7 +6116,7 @@ function App() {
             const plaintext = await openVaultWithKey(vault, key);
             if (plaintext) {
               const words = selectWallet(parseWalletSet(plaintext)).secret.split(' ');
-              setSeed(words); setUnlocked(true);
+              setSeed(words); setActiveWalletId(getCurrentWalletId()); setUnlocked(true);
               autoUnlocked = true;
               cacheSessionKey(key); // reseed the fast in-page cache
               // Re-announce the active address so dApps / eth_accounts work on an
@@ -5851,6 +6158,9 @@ function App() {
   const lock = () => {
     setUnlocked(false);
     setSeed([]);
+    setActiveWalletId('');
+    setWalletsOpen(false);
+    setAddStart(null);
     clearSessionKey();
     void clearPersistedSessionKey(); // drop the survives-popup-close key too
     // A locked wallet keeps no live Quantt login either (quantt.ts).
@@ -5874,6 +6184,7 @@ function App() {
   }, [unlocked]);
   const onComplete = (s: string[]) => {
     setSeed(s);
+    setActiveWalletId(getCurrentWalletId()); // Onboarding has just opened it
     setHasVault(true);
     setUnlocked(true);
     // Announce the unlocked address so the background can answer eth_accounts.
@@ -6172,6 +6483,34 @@ function App() {
       {modal === 'manage-networks' && <ManageNetworksModal onClose={() => setModal(null)}/>}
       {modal === 'recovery'        && <RecoveryPhraseModal onClose={() => setModal(null)}/>}
       {modal === 'change-password' && <ChangePasswordModal onClose={() => setModal(null)}/>}
+      {walletsOpen && (
+        <WalletsSheet
+          wallets={wallets} openId={openId} seed={seed} activeIdx={activeIdx} evmAddr={evmAddr}
+          busy={walletBusy} note={acctMsg} tick={nameTick} covered={addStart !== null}
+          onClose={() => setWalletsOpen(false)}
+          onOpenAccount={(id, i) => { void openAccountIn(id, i); }}
+          onAddAccount={(id) => { void addAccountIn(id); }}
+          onRenameAccount={saveAccountName}
+          onDeleteAccount={(i) => { void deleteAccount(i); }}
+          onRenameWallet={(id, name) => { void renameWalletIn(id, name); }}
+          onRemoveWallet={(id) => { void confirmRemoveWallet(id); }}
+          onAddWallet={(start) => { setAcctMsg(null); setAddStart(start); }}
+          onLock={lock}
+        />
+      )}
+      {/* Add wallet — the onboarding create / import steps in add mode, over
+          the sheet: the new wallet joins the vault under the same password
+          and opens; Cancel goes back to the sheet. */}
+      {addStart && (
+        <div className="ws-flow">
+          <Onboarding
+            key={addStart}
+            hasVault
+            onComplete={() => { /* add mode reports through onAdded */ }}
+            addMode={{ start: addStart, onAdded: onWalletAdded, onCancel: () => setAddStart(null) }}
+          />
+        </div>
+      )}
       {detailSym && (
         <TokenDetailModal
           sym={detailSym}
@@ -6185,31 +6524,17 @@ function App() {
       <div className="app">
         <div className="app-body">
           {tab === 'home'     && <HomeScreen
-            key={nameTick}
-            onAction={setModal} onLock={lock} onOpenSettings={() => setTab('settings')}
+            key={`${nameTick}-${activeWalletId}`}
+            onAction={setModal} onOpenSettings={() => setTab('settings')}
             onOpenToken={openToken}
             activeIdx={activeIdx}
-            onSwitch={switchAccount} onAdd={() => setAddOpen(true)}
-            onRenameAccount={renameAccount}
-            onDeleteAccount={(i) => { void deleteAccount(i); }}
+            onOpenWallets={openWallets}
             wallets={wallets} activeWalletId={activeWalletId}
-            onSwitchWallet={(id) => { void switchToWallet(id); }}
           />}
-          {addOpen && (
-            <AddWalletModal
-              walletName={activeWallet?.name ?? 'this wallet'}
-              accountBlock={pkWallet
-                ? 'This wallet was imported from a private key, so it has just the one account.'
-                : accountCount >= MAX_ACCOUNTS ? `A wallet holds up to ${MAX_ACCOUNTS} accounts.` : null}
-              walletsFull={wallets.length >= MAX_WALLETS}
-              onNewAccount={() => { addAccount(); setAddOpen(false); }}
-              onImported={(secret) => { openWalletSecret(secret); setAddOpen(false); void refreshWallets(); }}
-              onClose={() => setAddOpen(false)}
-            />
-          )}
           {tab === 'discover' && <DiscoverScreen/>}
           {tab === 'activity' && <ActivityScreen/>}
-          {tab === 'settings' && <SettingsScreen isDark={isDark} onToggleTheme={toggleTheme} onLock={lock} onOpenWalletConnect={() => setModal('walletconnect')} onOpenAddressBook={() => setModal('address-book')} onOpenPermissions={() => setModal('permissions')} address={lithoAddr || evmAddr} accountName={getAccountName(activeIdx)} onOpenChangePassword={() => setModal('change-password')} onOpenRecoveryPhrase={() => setModal('recovery')} onDeleteWallet={deleteWallet} onOpenManageNetworks={() => setModal('manage-networks')}/>}
+          {tab === 'settings' && <SettingsScreen isDark={isDark} onToggleTheme={toggleTheme} onLock={lock} onOpenWalletConnect={() => setModal('walletconnect')} onOpenAddressBook={() => setModal('address-book')} onOpenPermissions={() => setModal('permissions')} address={lithoAddr || evmAddr} accountName={getAccountName(activeIdx)} onOpenChangePassword={() => setModal('change-password')} onOpenRecoveryPhrase={() => setModal('recovery')} onDeleteWallet={deleteWallet} onOpenManageNetworks={() => setModal('manage-networks')}
+            onOpenWallets={openWallets} walletCount={wallets.length} openWalletName={activeWallet?.name}/>}
         </div>
         <div className="tabbar">
           {([
