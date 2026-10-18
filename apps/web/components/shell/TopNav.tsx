@@ -5,16 +5,14 @@ import { useTheme } from '../providers/ThemeProvider';
 import { useWallet } from './AppShell';
 import { Addr } from '../Addr';
 import {
-  Search, Bell, ChevronDown, Sun, Moon, User, Copy, Settings as SettingsIcon, Lock, Menu, KeyRound,
-  Pencil, Trash2, X, ArrowUpRight, ArrowDownLeft, Clock,
+  Search, Bell, ChevronDown, ChevronRight, Sun, Moon, User, Copy, Settings as SettingsIcon, Lock, Menu, KeyRound,
+  Pencil, Trash2, X, ArrowUpRight, ArrowDownLeft, Clock, Wallet as WalletGlyph,
 } from 'lucide-react';
 import { getAccountName, getVisibleAccountIndices } from '../../lib/vault';
-import { toLithoForm, shortAddress } from '../../lib/address';
+import { shortAddress } from '../../lib/address';
 import { TOKENS } from '../../lib/tokens';
 import { type IndexerActivityItem } from '../../lib/indexer';
 import { pendingActivityRows } from '../../lib/tx-store';
-
-const ACCOUNT_NAME = 'RobbyWallet';
 
 /* Trust Wallet-style vocabulary. Swap opens the existing swap modal and
    NFTs selects the home NFTs tab (both via a query param the dashboard
@@ -34,24 +32,24 @@ const NAV = [
 export function TopNav({
   onLock,
   activeIdx = 0,
-  accountCount = 1,
-  accountAddresses = [],
-  onSwitchAccount,
-  onAddAccount,
+  walletName,
+  walletsHint = 'Switch, add or import wallets',
+  onOpenWallets,
   onRenameAccount,
   onDeleteAccount,
 }: {
   onLock?:          () => void;
-  /** Current HD-derivation account (mnemonic wallets only). */
+  /** The open wallet's active account (0 for a private-key wallet). */
   activeIdx?:       number;
-  accountCount?:    number;
-  /** EVM address per account index — shown in the switcher so users can
-   *  identify which numbered account is which. */
-  accountAddresses?: string[];
-  /** When set, the menu shows an Account-N switcher + "+ Add account". */
-  onSwitchAccount?: (idx: number) => void;
-  onAddAccount?:    () => void;
-  /** Rename / remove an account. Removal is guarded by balance in AppShell. */
+  /** The open wallet's name — set when the vault holds several wallets. */
+  walletName?:      string;
+  /** The line under "Wallets & accounts" in the menu. */
+  walletsHint?:     string;
+  /** Opens Wallets & accounts: every wallet with its accounts, add account,
+   *  add / import wallet. Offered for every wallet type — a private-key
+   *  wallet included. */
+  onOpenWallets?:   () => void;
+  /** Rename / remove the active account. Removal is guarded by balance in AppShell. */
   onRenameAccount?: (idx: number) => void;
   onDeleteAccount?: (idx: number) => void;
 }) {
@@ -62,16 +60,14 @@ export function TopNav({
   const isDark = theme === 'dark';
   const [accountMenu, setAccountMenu] = useState(false);
   const [mobileMenu, setMobileMenu]   = useState(false);
-  const showSwitcher = !!onSwitchAccount && accountCount >= 1;
   // Its own name (renamed accounts included), not a fixed "Account N".
   const accountLabel = getAccountName(activeIdx);
-  // The switcher lists the OTHER accounts — the active one is the menu's
-  // header, with its rename / delete beside its name (client 2026-10-15:
-  // listing it again "seems redundant and confusing").
-  const visibleAccounts = getVisibleAccountIndices();
-  const otherAccounts = visibleAccounts.filter((i) => i !== activeIdx);
+  // The active account is the menu's header, with its rename / delete beside
+  // its name; every other account — of this wallet and the others — is in
+  // Wallets & accounts (client 2026-10-15: listing the active one again
+  // "seems redundant and confusing").
   // A wallet must always keep one account, so the last one can't be removed.
-  const lastAccount = visibleAccounts.length <= 1;
+  const lastAccount = getVisibleAccountIndices().length <= 1;
   const [copiedFmt, setCopiedFmt] = useState<'litho' | 'evm' | null>(null);
 
   /* What the chip + dropdown render. Falls back to a friendly placeholder
@@ -153,7 +149,7 @@ export function TopNav({
               <User size={18}/>
             </div>
             <div className="chip-info">
-              <span className="chip-name">{showSwitcher ? accountLabel : ACCOUNT_NAME}</span>
+              <span className="chip-name">{accountLabel}</span>
               <span className="chip-addr"><Addr value={activeAddr} head={8} tail={6}/></span>
             </div>
             <ChevronDown size={13} color="var(--text-muted)"/>
@@ -166,10 +162,11 @@ export function TopNav({
                 <div className="menu-header">
                   <div className="menu-avatar"><User size={24}/></div>
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div className="menu-name">{showSwitcher ? accountLabel : ACCOUNT_NAME}</div>
+                    <div className="menu-name">{accountLabel}</div>
+                    {walletName && <div className="menu-wallet-name">{walletName}</div>}
                     <div className="menu-addr" title={activeAddr} style={{ whiteSpace: 'nowrap' }}><Addr value={activeAddr} head={6} tail={5}/></div>
                   </div>
-                  {showSwitcher && (onRenameAccount || onDeleteAccount) && (
+                  {(onRenameAccount || onDeleteAccount) && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 2, alignSelf: 'flex-start' }}>
                       {onRenameAccount && (
                         <button
@@ -238,78 +235,21 @@ export function TopNav({
                     {copiedFmt === 'evm' ? '✓' : <Copy size={12}/>}
                   </button>
                 </div>
-                {showSwitcher && (
+                {onOpenWallets && (
                   <>
                     <div className="menu-divider"/>
-                    {otherAccounts.map((i) => {
-                      // Each account by its litho1… address.
-                      const a = accountAddresses[i] ? toLithoForm(accountAddresses[i]) : accountAddresses[i];
-                      return (
-                        <div
-                          key={i}
-                          className="menu-item"
-                          style={{ alignItems: 'center', display: 'flex', gap: 8 }}
-                        >
-                          <button
-                            onClick={() => { onSwitchAccount?.(i); setAccountMenu(false); }}
-                            style={{
-                              flex: 1, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
-                              background: 'none', border: 'none', color: 'inherit', font: 'inherit',
-                              cursor: 'pointer', padding: 0, textAlign: 'left',
-                            }}
-                          >
-                            <User size={16}/>
-                            <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25, minWidth: 0 }}>
-                              <span>{getAccountName(i)}</span>
-                              {a && (
-                                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Geist Mono, monospace', fontWeight: 400 }}>
-                                  {shortAddress(a)}
-                                </span>
-                              )}
-                            </span>
-                          </button>
-                          {onRenameAccount && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onRenameAccount(i); setAccountMenu(false); }}
-                              title="Rename account"
-                              aria-label={`Rename ${getAccountName(i)}`}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4, display: 'flex' }}
-                            >
-                              <Pencil size={13}/>
-                            </button>
-                          )}
-                          {onDeleteAccount && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (lastAccount) return;
-                                onDeleteAccount(i);
-                                setAccountMenu(false);
-                              }}
-                              disabled={lastAccount}
-                              title={lastAccount
-                                ? 'Your wallet must keep at least one account — add another to delete this one'
-                                : 'Delete account'}
-                              aria-label={`Delete ${getAccountName(i)}`}
-                              style={{
-                                background: 'none', border: 'none', padding: 4, display: 'flex',
-                                cursor: lastAccount ? 'not-allowed' : 'pointer',
-                                color: lastAccount ? 'var(--text-muted)' : 'var(--red, #f87171)',
-                                opacity: lastAccount ? 0.45 : 1,
-                              }}
-                            >
-                              <Trash2 size={13}/>
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {onAddAccount && accountCount < 10 && (
-                      <button className="menu-item" onClick={() => { onAddAccount(); setAccountMenu(false); }}>
-                        <span style={{ width: 16, textAlign: 'center', fontSize: 18, lineHeight: '16px' }}>+</span>
-                        Add account
-                      </button>
-                    )}
+                    <button
+                      className="menu-item menu-item-wallets"
+                      onClick={() => { setAccountMenu(false); onOpenWallets(); }}
+                      aria-haspopup="dialog"
+                    >
+                      <WalletGlyph size={18}/>
+                      <span className="menu-item-text">
+                        <span>Wallets &amp; accounts</span>
+                        <span className="menu-item-sub">{walletsHint}</span>
+                      </span>
+                      <ChevronRight size={16} className="menu-item-chevron"/>
+                    </button>
                   </>
                 )}
                 <div className="menu-divider"/>

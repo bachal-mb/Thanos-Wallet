@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ethers } from 'ethers';
 import { TOKENS } from '../lib/tokens';
-import { Globe, Shield, Info, ChevronRight, Key, Download, Lock, User as UserIcon, KeyRound, Usb, AlertTriangle, Copy, Check, Eye } from 'lucide-react';
+import { Globe, Shield, Info, ChevronRight, Key, Download, Lock, User as UserIcon, KeyRound, Usb, AlertTriangle, Copy, Check, Eye, Wallet as WalletIcon } from 'lucide-react';
 import { LedgerModal } from './LedgerModal';
 import { TrezorModal } from './TrezorModal';
 import { useWallet } from './shell/AppShell';
@@ -14,7 +14,7 @@ import {
   copySecretToClipboard,
 } from '@thanos/sdk-core';
 import { useDisplayCurrency } from '../lib/use-fx';
-import { loadVault, openVault, setSeedBackedUp, isSeedBackedUp, clearVault, getActiveAccountIndex } from '../lib/vault';
+import { loadVault, openVault, setSeedBackedUp, isSeedBackedUp, clearVault, getActiveAccountIndex, listWallets } from '../lib/vault';
 import { walletFromSeed } from '../lib/signer';
 import { type IndexerActivityItem } from '../lib/indexer';
 import { useLiveBalances } from '../lib/useLiveBalances';
@@ -1457,14 +1457,30 @@ export function SettingsView() {
   /* Delete wallet — two-step confirm, mirroring onboarding's resetWallet so
      the most destructive action in the app never rides on a single click. */
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The open wallet's flag (each wallet in the vault has its own).
   const seedBackedUp = typeof window !== 'undefined' ? isSeedBackedUp() : true;
+  const walletsApi = wallet?.wallets;
+  const walletCount = walletsApi?.list.length ?? 1;
   const deleteWallet = () => {
+    // Several wallets: only the open one goes (AppShell runs the balance /
+    // backup confirmations) and the others stay — same as the phone. The
+    // last one takes the full erase below.
+    if (walletsApi && walletCount > 1) { walletsApi.remove(walletsApi.activeId); return; }
     if (!confirmDelete) {
       setConfirmDelete(true);
       setTimeout(() => setConfirmDelete(false), 5_000);
       return;
     }
     setConfirmDelete(false);
+    void (async () => {
+      // Never erase several wallets from here: if the list hadn't loaded when
+      // this was armed, re-check and remove only the open one.
+      const listed = await listWallets().catch(() => null);
+      if (walletsApi && listed && listed.wallets.length > 1) { walletsApi.remove(walletsApi.activeId); return; }
+      eraseWallet();
+    })();
+  };
+  const eraseWallet = () => {
     clearVault();
     // Drop the Quantt login with the wallet — the local clear is synchronous,
     // so it lands before the reload below; the server logout is best-effort.
@@ -1550,6 +1566,19 @@ export function SettingsView() {
           </Row>
         </Section>
 
+        {walletsApi && (
+          <Section icon={WalletIcon} title="Wallets" sub="Recovery phrases and private keys kept in Thanos">
+            <Row
+              label="Wallets & accounts"
+              sub={walletCount > 1 ? `${walletCount} wallets · ${walletsApi.activeName} is open` : walletsApi.hint}
+            >
+              <button className="settings-btn" onClick={walletsApi.open}>
+                <WalletIcon size={14}/> Manage <ChevronRight size={14}/>
+              </button>
+            </Row>
+          </Section>
+        )}
+
         <AccountSection Section={Section} Row={Row}/>
 
         <NetworksSection Section={Section} Row={Row}/>
@@ -1609,11 +1638,13 @@ export function SettingsView() {
             the copy says plainly that the funds become unrecoverable. */}
         <Section icon={AlertTriangle} title="Danger zone" sub="Irreversible — read before you tap">
           <Row
-            label="Delete wallet"
+            label={walletCount > 1 ? 'Remove this wallet' : 'Delete wallet'}
             sub={
-              seedBackedUp
-                ? 'Erases this wallet from this device. You can restore it with your recovery phrase.'
-                : 'You have NOT backed up your recovery phrase. Deleting now loses access to these funds permanently.'
+              walletCount > 1
+                ? `Removes “${walletsApi?.activeName ?? 'this wallet'}” from this device. Your other wallets stay.`
+                : seedBackedUp
+                  ? 'Erases this wallet from this device. You can restore it with your recovery phrase.'
+                  : 'You have NOT backed up your recovery phrase. Deleting now loses access to these funds permanently.'
             }
           >
             <button
@@ -1621,7 +1652,7 @@ export function SettingsView() {
               onClick={deleteWallet}
               title={seedBackedUp ? 'Delete this wallet from this device' : 'Back up your recovery phrase first'}
             >
-              <Trash2 size={14}/> {confirmDelete ? 'Click again to erase' : 'Delete wallet'}
+              <Trash2 size={14}/> {walletCount > 1 ? 'Remove wallet' : confirmDelete ? 'Click again to erase' : 'Delete wallet'}
             </button>
           </Row>
         </Section>

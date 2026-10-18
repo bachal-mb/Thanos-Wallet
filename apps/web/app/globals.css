@@ -742,6 +742,42 @@ button:focus:not(:focus-visible),
 .menu-item-danger svg { color: var(--red); }
 .menu-item-danger:hover { background: rgba(248,113,113,0.08); color: var(--red); }
 .menu-item-danger:hover svg { color: var(--red); }
+
+/* ── Wallets & accounts (account menu entry, add-wallet overlay) ── */
+.menu-wallet-name {
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.menu-item-sub { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+.menu-item-wallets .menu-item-chevron { margin-left: auto; }
+
+/* The onboarding create / import steps in add-wallet mode, over the app.
+   Fills the viewport (inset: 0 is viewport-bound under the desktop zoom,
+   as .modal-backdrop is) and scrolls inside; the card centres in it. */
+.wallet-add-overlay {
+  position: fixed; inset: 0; z-index: 240;
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--bg-base);
+}
+.wallet-add-overlay .onboard-wrap { min-height: 100%; }
+.onboard-add-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: -6px -6px 6px 0;
+}
+.onboard-add-eyebrow {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.onboard-add-close {
+  width: 36px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 10px; background: none;
+  color: var(--text-secondary); cursor: pointer;
+}
+.onboard-add-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.onboard-add-close:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .chip-avatar {
   width: 28px; height: 28px; border-radius: 50%;
   background: var(--bg-elevated);

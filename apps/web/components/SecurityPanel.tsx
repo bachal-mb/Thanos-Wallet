@@ -12,14 +12,19 @@ import { useRouter } from 'next/navigation';
 import { ShieldCheck, ShieldAlert, Link2, ChevronRight } from 'lucide-react';
 import { isSeedBackedUp } from '../lib/vault';
 import { getActiveSessionCountIfReady } from '../lib/walletconnect';
+import { useWallet } from './shell/AppShell';
 
 export function SecurityPanel() {
   const router = useRouter();
   const [backedUp, setBackedUp] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<number | null>(null);
+  // Each wallet in the vault has its own backup flag — re-read when another opens.
+  const walletId = useWallet()?.walletId;
 
   useEffect(() => {
     setBackedUp(isSeedBackedUp());
+  }, [walletId]);
+  useEffect(() => {
     getActiveSessionCountIfReady().then(setSessions).catch(() => setSessions(null));
   }, []);
 
