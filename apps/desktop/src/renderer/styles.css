@@ -1623,6 +1623,162 @@ textarea.settings-select { background-image: none; padding-right: 12px; cursor: 
 .sk-cell-name { width: 96px; }
 .sk-cell-sm   { width: 54px; height: 10px; margin-left: auto; }
 
+/* ── Wallets & accounts panel (WalletsPanel.tsx) ─────────────────
+   Every wallet as a card with its accounts, the phone's sheet. Accent and
+   danger text get a per-theme shade: --blue / --red are below 4.5:1 as
+   small text on the light theme's surfaces. Badge colours match the phone
+   (text ≥5:1 on its tint in both themes). */
+:root {
+  --wp-accent: #7ea6fa;
+  --wp-danger: #f87171;
+}
+[data-theme="light"] {
+  --wp-accent: #1d4fc4;
+  --wp-danger: #c81e1e;
+}
+.wp-box { width: 460px; }
+.wp-body { padding: 14px 16px 6px; }
+.wp-section { margin-bottom: 4px; }
+.wp-section-title {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-muted); margin: 4px 2px 8px;
+}
+.wp-card {
+  border: 1px solid var(--border-default); border-radius: 14px;
+  background: var(--bg-elevated); margin-bottom: 10px;
+}
+/* Light: white cards — --text-muted is 4.4:1 on --bg-elevated, 4.8:1 on white. */
+[data-theme="light"] .wp-card { background: var(--bg-card); }
+.wp-card-open { border-color: var(--blue); }
+.wp-card > :last-child { border-bottom-left-radius: 13px; border-bottom-right-radius: 13px; }
+.wp-wallet-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 8px 10px 12px; border-radius: 13px 13px 0 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wp-clickable { cursor: pointer; }
+.wp-clickable:hover { background: var(--bg-hover); }
+.wp-wallet-text { flex: 1; min-width: 0; }
+.wp-wallet-name {
+  font-size: 14px; font-weight: 800; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wp-wallet-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
+.wp-badge { padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.wp-badge-created  { background: rgba(59,122,247,0.16);  color: #7ea6fa; }
+.wp-badge-phrase   { background: rgba(133,133,154,0.16); color: #c4c4d2; }
+.wp-badge-imported { background: rgba(139,125,247,0.16); color: #b9aef9; }
+.wp-badge-key      { background: rgba(245,158,11,0.16);  color: #fbbf24; }
+[data-theme="light"] .wp-badge-created  { background: rgba(59,122,247,0.12);  color: #1d4fc4; }
+[data-theme="light"] .wp-badge-phrase   { background: rgba(133,133,154,0.12); color: #4b4b57; }
+[data-theme="light"] .wp-badge-imported { background: rgba(139,125,247,0.12); color: #5b48d6; }
+[data-theme="light"] .wp-badge-key      { background: rgba(245,158,11,0.12);  color: #9a4a06; }
+.wp-open-tag { color: var(--wp-accent); font-weight: 700; }
+.wp-ident {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  color: #fff; font-weight: 800; letter-spacing: -0.02em; line-height: 1;
+}
+.wp-account-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 22px; cursor: pointer;
+}
+.wp-account-row:hover { background: var(--bg-hover); }
+.wp-account-row:focus-visible, .wp-clickable:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.wp-account-on { background: var(--blue-dim); }
+.wp-account-on:hover { background: rgba(59,122,247,0.18); }
+.wp-account-text { flex: 1; min-width: 0; }
+.wp-account-name {
+  font-size: 13px; font-weight: 600; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wp-account-on .wp-account-name { font-weight: 800; }
+/* Muted is under 4.5:1 on the active row's blue tint. */
+.wp-account-on .wp-account-addr { color: var(--text-secondary); }
+.wp-account-addr {
+  font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wp-tick { color: var(--wp-accent); display: flex; }
+.wp-icon-btn {
+  background: none; border: none; color: var(--text-muted); padding: 5px; border-radius: 7px;
+  display: flex; align-items: center; cursor: pointer; flex-shrink: 0;
+}
+.wp-icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.wp-icon-btn.wp-danger { color: var(--wp-danger); }
+.wp-icon-btn.wp-danger:hover:not(:disabled) { color: var(--wp-danger); background: var(--red-dim); }
+.wp-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; color: var(--text-muted); }
+.wp-add-account {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 0 10px 22px; background: none; border: none; border-top: 1px solid var(--border-subtle);
+  color: var(--wp-accent); font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
+}
+.wp-add-account:hover:not(:disabled) { background: var(--bg-hover); }
+.wp-add-account:disabled { opacity: 0.5; cursor: not-allowed; }
+.wp-menu-anchor { position: relative; flex-shrink: 0; }
+.wp-popover {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 168px;
+  background: var(--surface-float); border: 1px solid var(--border-default); border-radius: 10px;
+  padding: 4px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+}
+.wp-popover-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px;
+  background: none; border: none; border-radius: 7px; cursor: pointer; text-align: left;
+  font-size: 13px; font-weight: 600; color: var(--text-primary); font-family: inherit;
+}
+.wp-popover-item:hover { background: var(--bg-hover); }
+.wp-popover-item.wp-danger { color: var(--wp-danger); }
+.wp-footer { padding: 10px 16px 16px; border-top: 1px solid var(--border-subtle); flex-shrink: 0; }
+.wp-add-wallet {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px; border-radius: 12px; cursor: pointer; font-family: inherit;
+  background: var(--blue-dim); border: 1px solid rgba(59,122,247,0.28);
+  color: var(--wp-accent); font-weight: 700; font-size: 13.5px;
+}
+.wp-add-wallet:hover:not([aria-disabled="true"]):not(:disabled) { background: rgba(59,122,247,0.18); }
+.wp-add-wallet[aria-disabled="true"], .wp-add-wallet:disabled { opacity: 0.6; cursor: not-allowed; }
+.wp-msg {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  border-radius: 9px; padding: 8px 12px; margin-bottom: 10px;
+}
+.wp-spinner {
+  width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid var(--blue-dim); border-top-color: var(--blue);
+  animation: wpSpin 0.8s linear infinite;
+}
+@keyframes wpSpin { to { transform: rotate(360deg); } }
+.wp-add-intro { font-size: 12.5px; line-height: 1.55; color: var(--text-muted); margin: 0 0 12px; }
+.wp-option {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; margin-bottom: 8px;
+  border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-default);
+  cursor: pointer; text-align: left; font-family: inherit; color: var(--text-primary);
+}
+.wp-option:hover { border-color: var(--blue); }
+.wp-option-icon {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  background: var(--blue-dim); color: var(--wp-accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.wp-option-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wp-option-title { font-size: 14px; font-weight: 700; }
+.wp-option-sub { font-size: 12px; color: var(--text-muted); }
+.wp-option-chev { color: var(--text-muted); display: flex; }
+
+/* Add wallet: the onboarding create / import steps over the whole window. */
+.add-wallet-overlay { position: fixed; inset: 0; z-index: 240; display: flex; background: var(--surface-float); }
+.add-wallet-overlay .onboard-wrap { flex: 1; height: auto; }
+.add-wallet-cancel {
+  position: absolute; top: 16px; right: 18px; z-index: 2;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-family: inherit;
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
+}
+.add-wallet-cancel:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+/* Account menu: the open wallet's name, and the panel entry's count. */
+.menu-wallet { font-size: 11px; color: var(--text-muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-item-count { margin-left: auto; font-size: 11px; color: var(--text-muted); font-weight: 600; }
+
 /* ─────────── macOS Liquid Glass ───────────
    Only on macOS (preload sets html[data-platform=darwin]; the window has
    native 'under-window' vibrancy). Surfaces turn translucent with a soft
